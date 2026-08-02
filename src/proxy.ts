@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 import { validateSession } from '@/lib/auth';
 
 const SESSION_COOKIE = 'hermes-session';
-export const TENANT_ALLOWED_PREFIXES = ['/api/auth/', '/tenant/'];
+export const TENANT_ALLOWED_PREFIXES = ['/api/auth/', '/tenant/', '/api/tenant/'];
 
 function isTenantPathAllowed(pathname: string): boolean {
   return TENANT_ALLOWED_PREFIXES.some((prefix) => (

@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 
 import type { BackendKind } from './backend/types';
 
@@ -131,6 +132,13 @@ export function getInstance(id?: string | null): HermesInstance {
       kind: 'openclaw',
     }
   );
+}
+
+/** Strict tenant lookup: exact configured id only, with no legacy/default fallback. */
+export function getTenantInstance(id: string): HermesInstance | null {
+  const instance = getInstances().find((candidate) => candidate.id === id);
+  if (!instance?.homeDir || !existsSync(instance.homeDir)) return null;
+  return instance;
 }
 
 /** @deprecated Import these OpenClaw-specific helpers from backend/openclaw. */

@@ -13,6 +13,7 @@ export interface User {
   created_at: string;
   email?: string | null;
   auth_provider?: string | null;
+  tenant_instance_id?: string | null;
 }
 
 export interface UserRecord extends User {
@@ -127,6 +128,9 @@ export function ensureAuthTables(): void {
   try {
     db.exec("ALTER TABLE users ADD COLUMN google_sub TEXT");
   } catch { /* column exists */ }
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN tenant_instance_id TEXT NULL");
+  } catch { /* column exists */ }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)');
   db.exec("UPDATE users SET role = 'editor' WHERE role = 'operator'");
@@ -165,6 +169,7 @@ export function authenticate(username: string, password: string): User | null {
     created_at: row.created_at,
     email: (row as UserRecord & { email?: string | null }).email ?? null,
     auth_provider: (row as UserRecord & { auth_provider?: string | null }).auth_provider ?? 'local',
+    tenant_instance_id: row.tenant_instance_id ?? null,
   };
 }
 
@@ -183,7 +188,7 @@ export function validateSession(token: string): User | null {
   const now = Math.floor(Date.now() / 1000);
   const row = db
     .prepare(
-      `SELECT u.id, u.username, u.role, u.created_at, u.email, u.auth_provider
+      `SELECT u.id, u.username, u.role, u.created_at, u.email, u.auth_provider, u.tenant_instance_id
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ? AND s.expires_at > ?`,
     )
@@ -350,6 +355,7 @@ export function upsertStagesnapUser(sub: string): User {
 
   const db = getDb();
   const username = `stagesnap:${sub}`;
+  const tenantInstanceId = `stagesnap:${sub}`;
   const existing = db
     .prepare('SELECT auth_provider FROM users WHERE username = ?')
     .get(username) as { auth_provider?: string | null } | undefined;
@@ -358,13 +364,16 @@ export function upsertStagesnapUser(sub: string): User {
   }
   const pseudoPassword = randomBytes(24).toString('hex');
   db.prepare(
-    `INSERT INTO users (username, password_hash, role, auth_provider)
-     VALUES (?, ?, 'tenant', 'stagesnap')
-     ON CONFLICT(username) DO UPDATE SET role = 'tenant', auth_provider = 'stagesnap'`,
-  ).run(username, hashPassword(pseudoPassword));
+    `INSERT INTO users (username, password_hash, role, auth_provider, tenant_instance_id)
+     VALUES (?, ?, 'tenant', 'stagesnap', ?)
+     ON CONFLICT(username) DO UPDATE SET
+       role = 'tenant',
+       auth_provider = 'stagesnap',
+       tenant_instance_id = excluded.tenant_instance_id`,
+  ).run(username, hashPassword(pseudoPassword), tenantInstanceId);
 
   const row = db
-    .prepare('SELECT id, username, role, created_at, email, auth_provider FROM users WHERE username = ?')
+    .prepare('SELECT id, username, role, created_at, email, auth_provider, tenant_instance_id FROM users WHERE username = ?')
     .get(username) as User;
   return { ...row, role: normalizeRole(row.role) };
 }

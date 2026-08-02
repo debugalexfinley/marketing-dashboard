@@ -24,6 +24,31 @@ export function requireApiTenant(request: Request): NextResponse | null {
   return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 }
 
+const TENANT_BLOCKED_KEYS = new Set([
+  'system_prompt',
+  'origin_json',
+  'workspace',
+  'workdir',
+  'cwd',
+  'git_repo_root',
+  'path',
+  'homeDir',
+  'openclawHome',
+]);
+
+export function sanitizeForTenant(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeForTenant);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !TENANT_BLOCKED_KEYS.has(key))
+        .map(([key, child]) => [key, sanitizeForTenant(child)]),
+    );
+  }
+  if (typeof value === 'string' && value.startsWith('/')) return undefined;
+  return value;
+}
+
 export function requireApiAdmin(request: Request): NextResponse | null {
   try {
     requireAdmin(request);
