@@ -1,26 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { isRealMode } from '@/lib/seed-filter';
-import { getAgents, ACTION_TO_AGENT } from '@/lib/agent-config';
+import { resolveBackend } from '@/lib/backend';
 import type { AgentStatus, AgentStats, ActivityEntry } from '@/types';
-import fs from 'fs';
-import path from 'path';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
 
 export const dynamic = 'force-dynamic';
-
-interface AgentModelConfig {
-  primary: string;
-  fallbacks: string[];
-}
-
-interface UsageTotals {
-  tokens_today: number;
-  tokens_week: number;
-  cost_today: number;
-  cost_week: number;
-}
 
 function getInstanceIdFromRequest(req: NextRequest): string | null {
   try {
@@ -31,115 +16,12 @@ function getInstanceIdFromRequest(req: NextRequest): string | null {
   }
 }
 
-function getAgentModelRouting(openclawConfigPath: string, agentId: string): AgentModelConfig | null {
-  try {
-    if (!fs.existsSync(openclawConfigPath)) return null;
-    const raw = fs.readFileSync(openclawConfigPath, 'utf-8');
-    const config = JSON.parse(raw) as {
-      agents?: {
-        defaults?: { model?: unknown };
-        list?: Array<{ id?: string; model?: unknown }>;
-      };
-    };
-    const defaults = config.agents?.defaults?.model;
-    const list = config.agents?.list ?? [];
-    const agent = list.find((a) => a.id === agentId);
-    const selected = agent?.model ?? defaults;
-
-    if (!selected) return null;
-
-    if (typeof selected === 'string') {
-      return { primary: selected, fallbacks: [] };
-    }
-
-    if (typeof selected === 'object' && selected !== null) {
-      const model = selected as { primary?: unknown; fallbacks?: unknown };
-      const primary = typeof model.primary === 'string' ? model.primary : null;
-      const fallbacks = Array.isArray(model.fallbacks)
-        ? model.fallbacks.filter((m): m is string => typeof m === 'string')
-        : [];
-      if (primary) return { primary, fallbacks };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function getUsageTotals(agentsDir: string, agentId: string): UsageTotals {
-  const out: UsageTotals = {
-    tokens_today: 0,
-    tokens_week: 0,
-    cost_today: 0,
-    cost_week: 0,
-  };
-
-  const sessionsDir = path.join(agentsDir, agentId, 'sessions');
-  if (!fs.existsSync(sessionsDir)) return out;
-
-  const now = Date.now();
-  const todayStr = new Date(now).toISOString().slice(0, 10);
-  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
-
-  const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.jsonl'));
-  for (const file of files) {
-    const filePath = path.join(sessionsDir, file);
-    let content: string;
-    try {
-      content = fs.readFileSync(filePath, 'utf-8');
-    } catch {
-      continue;
-    }
-
-    const lines = content.split('\n').filter(Boolean);
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as {
-          type?: string;
-          timestamp?: string;
-          message?: {
-            role?: string;
-            usage?: {
-              totalTokens?: number;
-              cost?: { total?: number };
-            };
-          };
-        };
-        if (entry.type !== 'message') continue;
-        if (entry.message?.role !== 'assistant') continue;
-        if (!entry.timestamp) continue;
-
-        const ts = new Date(entry.timestamp).getTime();
-        if (Number.isNaN(ts)) continue;
-
-        const tokens = Math.max(0, Number(entry.message?.usage?.totalTokens ?? 0));
-        const cost = Math.max(0, Number(entry.message?.usage?.cost?.total ?? 0));
-        const date = entry.timestamp.slice(0, 10);
-
-        if (date === todayStr) {
-          out.tokens_today += tokens;
-          out.cost_today += cost;
-        }
-        if (ts >= weekAgo) {
-          out.tokens_week += tokens;
-          out.cost_week += cost;
-        }
-      } catch {
-        // ignore malformed lines
-      }
-    }
-  }
-
-  return out;
-}
-
 export async function GET(req: NextRequest) {
   const auth = requireApiUser(req as Request);
   if (auth) return auth;
 
   const instanceId = getInstanceIdFromRequest(req);
-  const instance = getInstance(instanceId);
-  const { openclawConfigPath, agentsDir } = resolveOpenClawPaths(instance);
+  const backend = resolveBackend(instanceId ?? undefined);
 
   const db = getDb();
   const now = Date.now();
@@ -148,9 +30,12 @@ export async function GET(req: NextRequest) {
     ? ` AND NOT EXISTS (SELECT 1 FROM seed_registry sr WHERE sr.table_name = 'activity_log' AND sr.record_id = CAST(activity_log.id AS TEXT))`
     : '';
 
-  const agents = getAgents(instance.id).map((agent) => {
+  const modelRouting = await backend.readModelRouting();
+  const agentDefinitions = await backend.listConfiguredAgents();
+  const actionMappings = await backend.listActionMappings();
+  const agents = await Promise.all(agentDefinitions.map(async (agent) => {
     // Get actions attributable to this agent
-    const agentActions = Object.entries(ACTION_TO_AGENT)
+    const agentActions = Object.entries(actionMappings)
       .filter(([, v]) => v.agent === agent.id)
       .map(([action]) => action);
 
@@ -204,7 +89,7 @@ export async function GET(req: NextRequest) {
         : [];
 
     const topSkills = skillCounts.map((s) => ({
-      skill: ACTION_TO_AGENT[s.action]?.skill || s.action,
+      skill: actionMappings[s.action]?.skill || s.action,
       count: s.c,
     }));
 
@@ -239,24 +124,23 @@ export async function GET(req: NextRequest) {
       top_skills: topSkills,
     };
 
-    const usage = getUsageTotals(agentsDir, agent.id);
+    const usage = await backend.readSessionUsage(agent.id);
     stats.tokens_today = usage.tokens_today;
     stats.tokens_week = usage.tokens_week;
     stats.cost_today = usage.cost_today;
     stats.cost_week = usage.cost_week;
 
-    const modelRouting = getAgentModelRouting(openclawConfigPath, agent.id);
+    const agentModelRouting = modelRouting[agent.id];
 
     return {
       ...agent,
-      model: modelRouting?.primary ?? agent.model,
-      fallbacks: modelRouting?.fallbacks ?? agent.fallbacks,
+      model: agentModelRouting?.primary ?? agent.model,
+      fallbacks: agentModelRouting?.fallbacks ?? agent.fallbacks,
       status,
       stats,
       recent_activity: recentActivity,
     };
-  });
+  }));
 
   return NextResponse.json(agents);
 }
-

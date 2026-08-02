@@ -6,6 +6,7 @@ import {
   getAgentWorkspaceRoot,
   resolveWorkspacePath as resolveWorkspaceRelativePath,
 } from '../agent-workspace';
+import { getHermesStateDir } from '../hermes-state';
 import type { HermesInstance } from '../instances';
 import type {
   AgentBackend,
@@ -685,16 +686,30 @@ function resolveWorkspaceToRootId(
 
 export class OpenClawBackend implements AgentBackend {
   readonly kind = 'openclaw' as const;
+  readonly instanceId: string;
   readonly instance: HermesInstance;
   readonly paths: OpenClawPaths;
 
   constructor(instance: HermesInstance) {
     this.instance = instance;
+    this.instanceId = instance.id;
     this.paths = resolveOpenClawPaths(instance);
+  }
+
+  cronWritesAllowed(): boolean {
+    return allowCronWrite();
+  }
+
+  async listActionMappings(): Promise<Record<string, { agent: string; skill: string }>> {
+    return ACTION_TO_AGENT;
   }
 
   async listAgents(): Promise<AgentDefinition[]> {
     return getOpenClawAgents(this.instance);
+  }
+
+  async listConfiguredAgents(): Promise<AgentDefinition[]> {
+    return getOpenClawAgents(this.instance, false);
   }
 
   async readModelRouting(): Promise<ModelRouting> {
@@ -712,6 +727,31 @@ export class OpenClawBackend implements AgentBackend {
 
   async listCronJobs(): Promise<CronJobsFile> {
     return readCronJobsFile(this.paths.cronDir);
+  }
+
+  async readRawCronJobs(): Promise<CronJobConfig[]> {
+    try {
+      const parsed = JSON.parse(
+        await fsPromises.readFile(path.join(this.paths.cronDir, 'jobs.json'), 'utf-8'),
+      ) as { jobs?: unknown };
+      return Array.isArray(parsed.jobs) ? parsed.jobs as CronJobConfig[] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async readCronNotificationJobs(): Promise<CronJobConfig[] | null> {
+    try {
+      const parsed = JSON.parse(
+        await fsPromises.readFile(path.join(this.paths.cronDir, 'jobs.json'), 'utf-8'),
+      ) as { jobs?: unknown };
+      if (parsed.jobs == null) return [];
+      if (!Array.isArray(parsed.jobs)) throw new TypeError('data.jobs is not iterable');
+      return parsed.jobs as CronJobConfig[];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   }
 
   async writeCronJobs(file: CronJobsFile): Promise<void> {
@@ -735,10 +775,17 @@ export class OpenClawBackend implements AgentBackend {
   }
 
   async readCronRuns(jobId: string, limit: number): Promise<CronRun[]> {
+    return (await this.readCronRunsInfo(jobId, limit)).runs;
+  }
+
+  async readCronRunsInfo(
+    jobId: string,
+    limit: number,
+  ): Promise<{ exists: boolean; runs: CronRun[] }> {
     const filePath = path.join(this.paths.cronDir, 'runs', `${jobId}.jsonl`);
     try {
       const lines = (await fsPromises.readFile(filePath, 'utf-8')).split('\n').filter(Boolean);
-      return lines
+      const runs = lines
         .slice(-limit)
         .map((line) => {
           try {
@@ -748,21 +795,32 @@ export class OpenClawBackend implements AgentBackend {
           }
         })
         .filter((run): run is CronRun => run !== null);
-    } catch {
-      return [];
+      return { exists: true, runs };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { exists: false, runs: [] };
+      }
+      throw error;
     }
   }
 
   async tailCronLog(jobId: string, bytes: number): Promise<string> {
+    return (await this.readCronLogInfo(jobId, bytes))?.content ?? '';
+  }
+
+  async readCronLogInfo(
+    jobId: string,
+    bytes: number,
+  ): Promise<{ content: string; modifiedAt: string } | null> {
     const filePath = path.join(this.paths.cronDir, 'logs', `${jobId}.log`);
     const stat = await fsPromises.stat(filePath).catch(() => null);
-    if (!stat) return '';
+    if (!stat) return null;
     const handle = await fsPromises.open(filePath, 'r');
     try {
       const readSize = Math.min(stat.size, bytes);
       const buffer = Buffer.alloc(readSize);
       await handle.read(buffer, 0, readSize, Math.max(0, stat.size - readSize));
-      return buffer.toString('utf-8');
+      return { content: buffer.toString('utf-8'), modifiedAt: stat.mtime.toISOString() };
     } finally {
       await handle.close();
     }
@@ -905,6 +963,29 @@ export class OpenClawBackend implements AgentBackend {
       if (kind === 'memory-policy') return DEFAULT_MEMORY_POLICY;
       if (kind === 'memory-alert-policy') return DEFAULT_ALERT_POLICY;
       return null;
+    }
+  }
+
+  async readRequiredHealthReport(kind: HealthReportKind): Promise<unknown | null> {
+    const filePath = path.join(this.paths.healthDir, `${kind}.json`);
+    try {
+      return JSON.parse(await fsPromises.readFile(filePath, 'utf-8')) as unknown;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async readSendingPauseState(): Promise<{ paused: boolean; reason: string | null }> {
+    const filePath = path.join(getHermesStateDir(), 'sending-paused.flag');
+    try {
+      const reason = (await fsPromises.readFile(filePath, 'utf-8')).trim().split('\n')[0] || 'Paused';
+      return { paused: true, reason };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { paused: false, reason: null };
+      }
+      return { paused: true, reason: 'Paused' };
     }
   }
 

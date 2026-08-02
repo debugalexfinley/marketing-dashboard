@@ -1,14 +1,9 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { getDb } from '@/lib/db';
-import { getHermesStateDir } from '@/lib/hermes-state';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
-
-const STATE_DIR = getHermesStateDir();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -28,23 +23,13 @@ export async function GET(request: Request) {
   if (auth) return auth;
 
   try {
-    const instance = getInstance(getInstanceId(request));
-    const { cronDir } = resolveOpenClawPaths(instance);
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
 
     const db = getDb();
 
-    const sendingPausedPath = path.join(STATE_DIR, 'sending-paused.flag');
-    const sending_paused = fs.existsSync(sendingPausedPath);
-
-    let paused_reason: string | null = null;
-    if (sending_paused) {
-      try {
-        paused_reason =
-          fs.readFileSync(sendingPausedPath, 'utf-8').trim().split('\n')[0] || 'Paused';
-      } catch {
-        paused_reason = 'Paused';
-      }
-    }
+    const pauseState = await backend.readSendingPauseState();
+    const sending_paused = pauseState.paused;
+    const paused_reason = pauseState.reason;
 
     const content_pending = db
       .prepare("SELECT COUNT(*) as c FROM content_posts WHERE status = 'pending_approval'")
@@ -69,15 +54,7 @@ export async function GET(request: Request) {
     let cron_total = 0;
     let cron_errors = 0;
     try {
-      const jobsPath = path.join(cronDir, 'jobs.json');
-      const raw = fs.readFileSync(jobsPath, 'utf-8');
-      const parsed: unknown = JSON.parse(raw);
-      const jobs: unknown[] =
-        Array.isArray(parsed)
-          ? parsed
-          : isRecord(parsed) && Array.isArray(parsed.jobs)
-            ? (parsed.jobs as unknown[])
-            : [];
+      const jobs = (await backend.listCronJobs()).jobs as unknown[];
       cron_total = jobs.length;
       cron_errors = jobs.filter((j) => {
         if (!isRecord(j)) return false;
@@ -93,7 +70,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json({
-      instance: instance.id,
+      instance: backend.instanceId,
       sending_paused,
       paused_reason,
       approvals_pending: (content_pending?.c ?? 0) + (seq_pending?.c ?? 0),

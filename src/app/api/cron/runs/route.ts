@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'node:fs';
-import path from 'node:path';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,33 +17,19 @@ export async function GET(req: NextRequest) {
   if (auth) return auth;
 
   try {
-    const instance = getInstance(getInstanceId(req));
-    const { cronDir } = resolveOpenClawPaths(instance);
-    const runsDir = path.join(cronDir, 'runs');
+    const backend = resolveBackend(getInstanceId(req) ?? undefined);
 
     const id = req.nextUrl.searchParams.get('id');
     if (!id) {
       return NextResponse.json({ error: 'Missing id' }, { status: 400 });
     }
-    const file = path.join(runsDir, `${id}.jsonl`);
-    if (!fs.existsSync(file)) {
+    const result = await backend.readCronRunsInfo(id, 10);
+    if (!result.exists) {
       return NextResponse.json({ runs: [] });
     }
-    const lines = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean);
-    const runs = lines
-      .slice(-10)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
 
-    return NextResponse.json({ instance: instance.id, runs });
+    return NextResponse.json({ instance: backend.instanceId, runs: result.runs });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
-

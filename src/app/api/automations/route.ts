@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAgents, ACTION_TO_AGENT } from '@/lib/agent-config';
+import { resolveBackend, type AgentBackend } from '@/lib/backend';
 import type { ApprovalItem, SkillExecution } from '@/types';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
-import fs from 'node:fs';
-import path from 'node:path';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,43 +29,13 @@ function getInstanceIdFromRequest(request: Request): string | null {
   }
 }
 
-function readCronJobs(cronJobsPath: string): CronJob[] {
-  try {
-    const raw = fs.readFileSync(cronJobsPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { jobs?: CronJob[] };
-    return Array.isArray(parsed.jobs) ? parsed.jobs : [];
-  } catch {
-    return [];
-  }
-}
-
 function extractDecision(text: string): 'SCALE' | 'ITERATE' | 'KILL' | null {
   const m = text.match(/\b(SCALE|ITERATE|KILL)\b/i);
   if (!m) return null;
   return m[1].toUpperCase() as 'SCALE' | 'ITERATE' | 'KILL';
 }
 
-function readRecentRuns(cronRunsDir: string, jobId: string): CronRun[] {
-  const file = path.join(cronRunsDir, `${jobId}.jsonl`);
-  if (!fs.existsSync(file)) return [];
-  try {
-    const lines = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean);
-    return lines.slice(-200)
-      .map((line) => {
-        try {
-          return JSON.parse(line) as CronRun;
-        } catch {
-          return null;
-        }
-      })
-      .filter((r): r is CronRun => !!r);
-  } catch {
-    return [];
-  }
-}
-
-function computeExperimentInsights(cronJobsPath: string, cronRunsDir: string) {
-  const jobs = readCronJobs(cronJobsPath);
+async function computeExperimentInsights(backend: AgentBackend, jobs: CronJob[]) {
   const total = jobs.length;
   const withContract = jobs.filter((j) => (j.payload?.message || '').includes('EXPERIMENT_CONTRACT:'));
   const withoutContract = jobs.filter((j) => !(j.payload?.message || '').includes('EXPERIMENT_CONTRACT:'));
@@ -80,7 +47,7 @@ function computeExperimentInsights(cronJobsPath: string, cronRunsDir: string) {
   for (const job of withContract) {
     const jobId = job.id;
     if (!jobId) continue;
-    const runs = readRecentRuns(cronRunsDir, jobId);
+    const runs = await backend.readCronRuns(jobId, 200) as CronRun[];
     for (const run of runs) {
       const tsNum = typeof run.ts === 'number' ? run.ts : Number(new Date(run.ts || '').getTime());
       if (!Number.isFinite(tsNum) || tsNum < cutoffMs) continue;
@@ -119,10 +86,8 @@ function computeExperimentInsights(cronJobsPath: string, cronRunsDir: string) {
 export async function GET(request: Request) {
   const auth = requireApiUser(request as Request);
   if (auth) return auth;
-  const instance = getInstance(getInstanceIdFromRequest(request));
-  const { cronDir } = resolveOpenClawPaths(instance);
-  const cronJobsPath = path.join(cronDir, 'jobs.json');
-  const cronRunsDir = path.join(cronDir, 'runs');
+  const backend = resolveBackend(getInstanceIdFromRequest(request) ?? undefined);
+  const actionMappings = await backend.listActionMappings();
   const db = getDb();
 
   const pendingEmails = db.prepare(
@@ -152,15 +117,15 @@ export async function GET(request: Request) {
   ).all() as { action: string; c: number; last_run: string }[];
 
   const skillExecutions: SkillExecution[] = actionCounts
-    .filter(a => ACTION_TO_AGENT[a.action])
+    .filter(a => actionMappings[a.action])
     .map(a => ({
-      skill: ACTION_TO_AGENT[a.action].skill,
-      agent: ACTION_TO_AGENT[a.action].agent,
+      skill: actionMappings[a.action].skill,
+      agent: actionMappings[a.action].agent,
       count: a.c,
       last_run: a.last_run,
     }));
 
-  const schedule = getAgents(instance.id).flatMap((agent) =>
+  const schedule = (await backend.listConfiguredAgents()).flatMap((agent) =>
     agent.cronJobs.map(job => ({
       ...job,
       agent: agent.id,
@@ -181,10 +146,10 @@ export async function GET(request: Request) {
      GROUP BY hour ORDER BY hour`
   ).all(today) as { hour: number; c: number }[];
 
-  const experiment = computeExperimentInsights(cronJobsPath, cronRunsDir);
+  const experiment = await computeExperimentInsights(backend, await backend.readRawCronJobs() as CronJob[]);
 
   return NextResponse.json({
-    instance: instance.id,
+    instance: backend.instanceId,
     approvals,
     skill_executions: skillExecutions,
     schedule,

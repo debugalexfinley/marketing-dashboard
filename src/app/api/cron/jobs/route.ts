@@ -2,15 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiEditor, requireApiUser } from '@/lib/api-auth';
 import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
-import { allowCronWrite, getInstance, resolveOpenClawPaths } from '@/lib/instances';
-import {
-  deleteCronJob,
-  normalizeJobId,
-  readCronJobsFile,
-  upsertCronJob,
-  writeCronJobsFile,
-  type CronJobConfig,
-} from '@/lib/cron-jobs';
+import { resolveBackend, type CronJobConfig, type CronJobsFile } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +11,47 @@ function stripDerivedFields(job: CronJobConfig): CronJobConfig {
   delete out.lastRun;
   delete out.lastResult;
   return out as CronJobConfig;
+}
+
+function normalizeJobId(value: unknown): string | null {
+  const id = String(value ?? '').trim();
+  if (!id || id.length > 128 || !/^[a-z0-9][a-z0-9_-]*$/i.test(id)) return null;
+  return id;
+}
+
+function resolveCronJobId(job: CronJobConfig): string | null {
+  return normalizeJobId(job.id ?? job.jobId);
+}
+
+function upsertCronJob(jobsFile: CronJobsFile, job: CronJobConfig): CronJobsFile {
+  const id = resolveCronJobId(job);
+  if (!id) return jobsFile;
+  const normalized = { ...job, id, jobId: id };
+  const now = Date.now();
+  const existing = jobsFile.jobs.find((item) => resolveCronJobId(item) === id);
+  if (existing) {
+    const merged = { ...existing, ...normalized, id, jobId: id, updatedAtMs: now };
+    return {
+      ...jobsFile,
+      jobs: jobsFile.jobs.map((item) => (resolveCronJobId(item) === id ? merged : item)),
+    };
+  }
+  return {
+    ...jobsFile,
+    jobs: [
+      ...jobsFile.jobs,
+      {
+        ...normalized,
+        enabled: normalized.enabled !== false,
+        createdAtMs: typeof normalized.createdAtMs === 'number' ? normalized.createdAtMs : now,
+        updatedAtMs: now,
+      },
+    ],
+  };
+}
+
+function deleteCronJob(jobsFile: CronJobsFile, id: string): CronJobsFile {
+  return { ...jobsFile, jobs: jobsFile.jobs.filter((job) => resolveCronJobId(job) !== id) };
 }
 
 function getInstanceId(req: NextRequest): string | null {
@@ -34,11 +67,10 @@ export async function GET(req: NextRequest) {
   if (auth) return auth;
   try {
     const actor = requireUser(req as unknown as Request);
-    const instance = getInstance(getInstanceId(req));
-    const { cronDir } = resolveOpenClawPaths(instance);
-    const jobsFile = await readCronJobsFile(cronDir);
-    const canWrite = allowCronWrite() && (actor.role === 'admin' || actor.role === 'editor');
-    return NextResponse.json({ instance: instance.id, jobs: jobsFile.jobs, can_write: canWrite });
+    const backend = resolveBackend(getInstanceId(req) ?? undefined);
+    const jobsFile = await backend.listCronJobs();
+    const canWrite = backend.cronWritesAllowed() && (actor.role === 'admin' || actor.role === 'editor');
+    return NextResponse.json({ instance: backend.instanceId, jobs: jobsFile.jobs, can_write: canWrite });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -47,7 +79,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const auth = requireApiEditor(req as unknown as Request);
   if (auth) return auth;
-  if (!allowCronWrite()) {
+  const backend = resolveBackend(getInstanceId(req) ?? undefined);
+  if (!backend.cronWritesAllowed()) {
     return NextResponse.json({ error: 'Cron writes are disabled (set HERMES_ALLOW_CRON_WRITE=true)' }, { status: 403 });
   }
   const actor = requireUser(req as unknown as Request);
@@ -59,20 +92,18 @@ export async function POST(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'Invalid job.id' }, { status: 400 });
 
   try {
-    const instance = getInstance(getInstanceId(req));
-    const { cronDir } = resolveOpenClawPaths(instance);
-    const jobsFile = await readCronJobsFile(cronDir);
+    const jobsFile = await backend.listCronJobs();
     if (jobsFile.jobs.some((j) => normalizeJobId(j.id ?? j.jobId) === id)) {
       return NextResponse.json({ error: 'Job already exists' }, { status: 409 });
     }
     const next = upsertCronJob(jobsFile, { ...(job || {}), id, jobId: id });
-    await writeCronJobsFile(cronDir, next);
+    await backend.writeCronJobs(next);
 
     logAudit({
       actor,
       action: 'cron.create',
-      target: `cron:${instance.id}:${id}`,
-      detail: { instance: instance.id },
+      target: `cron:${backend.instanceId}:${id}`,
+      detail: { instance: backend.instanceId },
     });
 
     return NextResponse.json({ ok: true, jobs: next.jobs });
@@ -84,7 +115,8 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const auth = requireApiEditor(req as unknown as Request);
   if (auth) return auth;
-  if (!allowCronWrite()) {
+  const backend = resolveBackend(getInstanceId(req) ?? undefined);
+  if (!backend.cronWritesAllowed()) {
     return NextResponse.json({ error: 'Cron writes are disabled (set HERMES_ALLOW_CRON_WRITE=true)' }, { status: 403 });
   }
   const actor = requireUser(req as unknown as Request);
@@ -96,20 +128,18 @@ export async function PATCH(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'Invalid job.id' }, { status: 400 });
 
   try {
-    const instance = getInstance(getInstanceId(req));
-    const { cronDir } = resolveOpenClawPaths(instance);
-    const jobsFile = await readCronJobsFile(cronDir);
+    const jobsFile = await backend.listCronJobs();
     if (!jobsFile.jobs.some((j) => normalizeJobId(j.id ?? j.jobId) === id)) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
     const next = upsertCronJob(jobsFile, { ...(job || {}), id, jobId: id });
-    await writeCronJobsFile(cronDir, next);
+    await backend.writeCronJobs(next);
 
     logAudit({
       actor,
       action: 'cron.update',
-      target: `cron:${instance.id}:${id}`,
-      detail: { instance: instance.id },
+      target: `cron:${backend.instanceId}:${id}`,
+      detail: { instance: backend.instanceId },
     });
 
     return NextResponse.json({ ok: true, jobs: next.jobs });
@@ -121,7 +151,8 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = requireApiEditor(req as unknown as Request);
   if (auth) return auth;
-  if (!allowCronWrite()) {
+  const backend = resolveBackend(getInstanceId(req) ?? undefined);
+  if (!backend.cronWritesAllowed()) {
     return NextResponse.json({ error: 'Cron writes are disabled (set HERMES_ALLOW_CRON_WRITE=true)' }, { status: 403 });
   }
   const actor = requireUser(req as unknown as Request);
@@ -130,20 +161,18 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
 
   try {
-    const instance = getInstance(getInstanceId(req));
-    const { cronDir } = resolveOpenClawPaths(instance);
-    const jobsFile = await readCronJobsFile(cronDir);
+    const jobsFile = await backend.listCronJobs();
     if (!jobsFile.jobs.some((j) => normalizeJobId(j.id ?? j.jobId) === id)) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
     const next = deleteCronJob(jobsFile, id);
-    await writeCronJobsFile(cronDir, next);
+    await backend.writeCronJobs(next);
 
     logAudit({
       actor,
       action: 'cron.delete',
-      target: `cron:${instance.id}:${id}`,
-      detail: { instance: instance.id },
+      target: `cron:${backend.instanceId}:${id}`,
+      detail: { instance: backend.instanceId },
     });
 
     return NextResponse.json({ ok: true, jobs: next.jobs });

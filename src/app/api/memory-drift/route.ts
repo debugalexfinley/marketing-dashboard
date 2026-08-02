@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,19 +17,14 @@ export async function GET(request: Request) {
   const auth = requireApiUser(request);
   if (auth) return auth;
   try {
-    const instance = getInstance(getInstanceId(request));
-    const { healthDir } = resolveOpenClawPaths(instance);
-    const driftJson = path.join(healthDir, 'memory-drift-weekly.json');
-
-    if (!fs.existsSync(driftJson)) {
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const data = await backend.readRequiredHealthReport('memory-drift-weekly');
+    if (data === null) {
       return NextResponse.json({ error: 'Memory drift report not found' }, { status: 404 });
     }
-    const raw = fs.readFileSync(driftJson, 'utf-8');
-    const data = JSON.parse(raw);
     return NextResponse.json(data);
   } catch (error) {
     console.error('GET /api/memory-drift error:', error);
     return NextResponse.json({ error: 'Failed to read memory drift report' }, { status: 500 });
   }
 }
-

@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import fs from 'fs';
-import path from 'path';
 import { requireApiUser } from '@/lib/api-auth';
-import { getAgentIds } from '@/lib/agent-config';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 function getInstanceId(request: Request): string | null {
   try {
@@ -13,18 +10,6 @@ function getInstanceId(request: Request): string | null {
   } catch {
     return null;
   }
-}
-
-interface SessionEntry {
-  type: string;
-  id: string;
-  parentId?: string;
-  timestamp: string;
-  message?: {
-    role: string;
-    content: Array<{ type: string; text?: string; thinking?: string; name?: string }>;
-    timestamp?: number;
-  };
 }
 
 /**
@@ -36,25 +21,22 @@ export async function POST(request: Request) {
   const auth = requireApiUser(request as Request);
   if (auth) return auth;
 
-  const instance = getInstance(getInstanceId(request));
-  const { agentsDir } = resolveOpenClawPaths(instance);
+  const backend = resolveBackend(getInstanceId(request) ?? undefined);
 
   const db = getDb();
   let imported = 0;
   let skipped = 0;
   const errors: string[] = [];
-  const agentIds = getAgentIds(instance.id);
+  const agentIds = (await backend.listConfiguredAgents()).map((agent) => agent.id);
 
   for (const agentId of agentIds) {
-    const sessionsDir = path.join(agentsDir, agentId, 'sessions');
-    if (!fs.existsSync(sessionsDir)) continue;
+    const refs = await backend.readSessions(agentId);
 
-    const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.jsonl'));
-
-    for (const file of files) {
-      const filePath = path.join(sessionsDir, file);
-      const sessionId = file.replace('.jsonl', '');
-      const conversationId = `session:${instance.id}:${agentId}:${sessionId}`;
+    for (const ref of refs) {
+      const file = ref.name;
+      const filePath = ref.path;
+      const sessionId = ref.sessionId;
+      const conversationId = `session:${backend.instanceId}:${agentId}:${sessionId}`;
 
       try {
         // Check last sync position
@@ -65,15 +47,13 @@ export async function POST(request: Request) {
         const lastOffset = syncState?.last_offset || 0;
 
         // Read file and get current size
-        const stat = fs.statSync(filePath);
-        if (stat.size <= lastOffset) {
+        if (ref.size <= lastOffset) {
           skipped++;
           continue; // No new data
         }
 
         // Read new content from last offset (simple full read)
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const lines = content.split('\n').filter((l) => l.trim());
+        const { entries } = await backend.readSessionEntries(ref, lastOffset);
 
         const existingCount = db
           .prepare('SELECT COUNT(*) as c FROM messages WHERE conversation_id = ?')
@@ -82,38 +62,33 @@ export async function POST(request: Request) {
         // Parse all message entries
         const messageEntries: Array<{ role: string; text: string; timestamp: string }> = [];
 
-        for (const line of lines) {
-          try {
-            const entry: SessionEntry = JSON.parse(line);
-            if (entry.type !== 'message' || !entry.message) continue;
+        for (const entry of entries) {
+          if (entry.type !== 'message' || !entry.message) continue;
 
-            const { role, content: contentBlocks } = entry.message;
+          const { role, content: contentBlocks } = entry.message;
 
-            if (role === 'user') {
-              const textBlock = contentBlocks?.find((b) => b.type === 'text');
-              if (textBlock?.text) {
-                messageEntries.push({
-                  role: 'user',
-                  text: textBlock.text,
-                  timestamp: entry.timestamp,
-                });
-              }
-            } else if (role === 'assistant') {
-              const textBlocks = contentBlocks?.filter((b) => b.type === 'text') || [];
-              const combinedText = textBlocks
-                .map((b) => b.text)
-                .filter(Boolean)
-                .join('\n\n');
-              if (combinedText) {
-                messageEntries.push({
-                  role: 'assistant',
-                  text: combinedText,
-                  timestamp: entry.timestamp,
-                });
-              }
+          if (role === 'user') {
+            const textBlock = contentBlocks?.find((b) => b.type === 'text');
+            if (textBlock?.text) {
+              messageEntries.push({
+                role: 'user',
+                text: textBlock.text,
+                timestamp: entry.timestamp,
+              });
             }
-          } catch {
-            // Skip malformed lines
+          } else if (role === 'assistant') {
+            const textBlocks = contentBlocks?.filter((b) => b.type === 'text') || [];
+            const combinedText = textBlocks
+              .map((b) => b.text)
+              .filter(Boolean)
+              .join('\n\n');
+            if (combinedText) {
+              messageEntries.push({
+                role: 'assistant',
+                text: combinedText,
+                timestamp: entry.timestamp,
+              });
+            }
           }
         }
 
@@ -134,7 +109,7 @@ export async function POST(request: Request) {
               const metadata = JSON.stringify({
                 source: 'session_sync',
                 session_id: sessionId,
-                instance: instance.id,
+                instance: backend.instanceId,
               });
 
               insert.run(conversationId, fromAgent, toAgent, entry.text, metadata, ts);
@@ -164,7 +139,7 @@ export async function POST(request: Request) {
           `).run(
             title,
             preview,
-            JSON.stringify({ conversation_id: conversationId, agent_id: agentId, count: toImport.length, instance: instance.id }),
+            JSON.stringify({ conversation_id: conversationId, agent_id: agentId, count: toImport.length, instance: backend.instanceId }),
           );
         }
 
@@ -175,15 +150,15 @@ export async function POST(request: Request) {
           ON CONFLICT(session_file) DO UPDATE SET
             last_offset = excluded.last_offset,
             last_synced_at = excluded.last_synced_at
-        `).run(filePath, stat.size);
+        `).run(filePath, ref.size);
       } catch (err) {
-        errors.push(`${instance.id}/${agentId}/${file}: ${err}`);
+        errors.push(`${backend.instanceId}/${agentId}/${file}: ${err}`);
       }
     }
   }
 
   return NextResponse.json({
-    instance: instance.id,
+    instance: backend.instanceId,
     imported,
     skipped,
     errors: errors.length > 0 ? errors : undefined,
@@ -203,4 +178,3 @@ export async function GET(request: Request) {
 }
 
 export const dynamic = 'force-dynamic';
-

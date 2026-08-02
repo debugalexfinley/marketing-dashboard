@@ -154,14 +154,25 @@ export type HealthReportKind =
 
 export interface AgentBackend {
   kind: BackendKind;
+  readonly instanceId: string;
+  cronWritesAllowed(): boolean;
+  listActionMappings(): Promise<Record<string, { agent: string; skill: string }>>;
   listAgents(): Promise<AgentDefinition[]>;
+  listConfiguredAgents(): Promise<AgentDefinition[]>;
   readModelRouting(): Promise<ModelRouting>;
   listCronJobs(): Promise<CronJobsFile>;
+  readRawCronJobs(): Promise<CronJobConfig[]>;
+  readCronNotificationJobs(): Promise<CronJobConfig[] | null>;
   writeCronJobs(file: CronJobsFile): Promise<void>;
   upsertCronJob(job: CronJobConfig): Promise<void>;
   toggleCronJob(id: string, enabled: boolean): Promise<void>;
   readCronRuns(jobId: string, limit: number): Promise<CronRun[]>;
+  readCronRunsInfo(jobId: string, limit: number): Promise<{ exists: boolean; runs: CronRun[] }>;
   tailCronLog(jobId: string, bytes: number): Promise<string>;
+  readCronLogInfo(
+    jobId: string,
+    bytes: number,
+  ): Promise<{ content: string; modifiedAt: string } | null>;
   readSessions(agentId: string): Promise<SessionFileRef[]>;
   readSessionEntries(
     ref: SessionFileRef,
@@ -172,6 +183,8 @@ export interface AgentBackend {
   sendOrchestratorMessage(message: string): Promise<CommandResult>;
   validateConfig(): Promise<CommandResult>;
   readHealthReport(kind: HealthReportKind): Promise<unknown | null>;
+  readRequiredHealthReport(kind: HealthReportKind): Promise<unknown | null>;
+  readSendingPauseState(): Promise<{ paused: boolean; reason: string | null }>;
   writeHealthPolicy(
     kind: 'memory-policy' | 'memory-alert-policy',
     body: unknown,

@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,16 +17,11 @@ export async function GET(request: Request) {
   const auth = requireApiUser(request);
   if (auth) return auth;
   try {
-    const instance = getInstance(getInstanceId(request));
-    const { healthDir } = resolveOpenClawPaths(instance);
-    const alertsJson = path.join(healthDir, 'memory-alerts.json');
-
-    if (!fs.existsSync(alertsJson)) {
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const data = await backend.readRequiredHealthReport('memory-alerts');
+    if (data === null) {
       return NextResponse.json({ error: 'Memory alerts report not found' }, { status: 404 });
     }
-
-    const raw = fs.readFileSync(alertsJson, 'utf-8');
-    const data = JSON.parse(raw);
     return NextResponse.json(data);
   } catch (error) {
     console.error('GET /api/memory-alerts error:', error);
