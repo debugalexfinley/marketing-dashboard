@@ -1,11 +1,14 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import type { BackendKind } from './backend/types';
+
 export type HermesInstance = {
   id: string;
   label: string;
   openclawHome: string;
   cronUser?: string;
+  kind?: BackendKind;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,6 +54,7 @@ function parseInstancesFromEnv(): HermesInstance[] | null {
         id,
         label: normalizeLabel(item.label, id),
         openclawHome,
+        kind: item.kind === 'hermes' ? 'hermes' : 'openclaw',
         cronUser:
           typeof item.cronUser === 'string' && item.cronUser.trim()
             ? item.cronUser.trim()
@@ -84,6 +88,7 @@ export function getInstances(): HermesInstance[] {
       id: defaultId,
       label: 'Default',
       openclawHome: path.resolve(expandHome(home)),
+      kind: 'openclaw',
       cronUser: process.env.HERMES_CRON_USER?.trim() || undefined,
     },
   ];
@@ -109,49 +114,15 @@ export function getInstance(id?: string | null): HermesInstance {
       id: getDefaultInstanceId(),
       label: 'Default',
       openclawHome: path.join(os.homedir(), '.openclaw'),
+      kind: 'openclaw',
     }
   );
 }
 
-export function resolveOpenClawPaths(instance: HermesInstance): {
-  openclawHome: string;
-  openclawConfigPath: string;
-  agentsDir: string;
-  cronDir: string;
-  healthDir: string;
-  logsDir: string;
-} {
-  const openclawHome = instance.openclawHome;
-  return {
-    openclawHome,
-    openclawConfigPath: path.join(openclawHome, 'openclaw.json'),
-    agentsDir: path.join(openclawHome, 'agents'),
-    cronDir: path.join(openclawHome, 'cron'),
-    healthDir: path.join(openclawHome, 'health'),
-    logsDir: path.join(openclawHome, 'logs'),
-  };
-}
-
-export function allowPolicyWrite(): boolean {
-  return (
-    String(process.env.HERMES_ALLOW_POLICY_WRITE ?? '')
-      .trim()
-      .toLowerCase() === 'true'
-  );
-}
-
-export function allowCronWrite(): boolean {
-  return (
-    String(process.env.HERMES_ALLOW_CRON_WRITE ?? '')
-      .trim()
-      .toLowerCase() === 'true'
-  );
-}
-
-export function allowWorkspaceWrite(): boolean {
-  return (
-    String(process.env.HERMES_ALLOW_WORKSPACE_WRITE ?? '')
-      .trim()
-      .toLowerCase() === 'true'
-  );
-}
+/** @deprecated Import these OpenClaw-specific helpers from backend/openclaw. */
+export {
+  allowCronWrite,
+  allowPolicyWrite,
+  allowWorkspaceWrite,
+  resolveOpenClawPaths,
+} from './backend/openclaw';
