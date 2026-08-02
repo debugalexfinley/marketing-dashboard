@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sanitizeForTenant } from '@/lib/api-auth';
+import { sanitizeForTenant, tenantInternalErrorResponse } from '@/lib/api-auth';
 import { resolveTenantBackend, TenantAccessError } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +23,6 @@ export async function GET(request: Request) {
     if (error instanceof TenantAccessError) {
       return NextResponse.json({ error: error.code }, { status: error.status });
     }
-    throw error;
+    return tenantInternalErrorResponse(error);
   }
 }

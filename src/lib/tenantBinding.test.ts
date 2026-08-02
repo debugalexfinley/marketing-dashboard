@@ -10,6 +10,9 @@ import { genHermesHome } from '../../feature-research/hermes-port/fixtures/gen-h
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-tenant-binding-'));
 const dbPath = path.join(tempRoot, 'auth.db');
 const missingHome = path.join(tempRoot, 'missing-home');
+const regularFileHome = path.join(tempRoot, 'regular-file-home');
+const symlinkHome = path.join(tempRoot, 'symlink-home');
+const backendErrorHome = path.join(tempRoot, 'backend-error-home');
 
 process.env.HERMES_DB_PATH = dbPath;
 
@@ -22,6 +25,7 @@ import { GET as getWorkspaceRoots } from '@/app/api/agents/workspace-roots/route
 import { GET as getTenantAgent } from '@/app/api/tenant/agent/route';
 import { GET as getTenantCron } from '@/app/api/tenant/cron/route';
 import { GET as getTenantSessions } from '@/app/api/tenant/sessions/route';
+import { sanitizeForTenant } from '@/lib/api-auth';
 import { createSession, ensureAuthTables, upsertStagesnapUser } from '@/lib/auth';
 import { getDb, resetDbForTests } from '@/lib/db';
 
@@ -64,12 +68,28 @@ function configuredInstances(): string {
       id: 'stagesnap:missing-home', label: 'Missing', openclawHome: '',
       homeDir: missingHome, profile: 'missing-profile', kind: 'hermes',
     },
+    {
+      id: 'stagesnap:regular-file', label: 'Regular file', openclawHome: '',
+      homeDir: regularFileHome, profile: 'regular-file-profile', kind: 'hermes',
+    },
+    {
+      id: 'stagesnap:symlink-home', label: 'Symlink', openclawHome: '',
+      homeDir: symlinkHome, profile: 'symlink-profile', kind: 'hermes',
+    },
+    {
+      id: 'stagesnap:openclaw-home', label: 'Wrong backend kind', openclawHome: aHome,
+      homeDir: aHome, profile: 'openclaw-profile', kind: 'openclaw',
+    },
+    {
+      id: 'stagesnap:backend-error', label: 'Backend error', openclawHome: '',
+      homeDir: backendErrorHome, profile: 'backend-error-profile', kind: 'hermes',
+    },
   ]);
 }
 
-function request(pathname: string, token: string): NextRequest {
+function request(pathname: string, token?: string): NextRequest {
   return new NextRequest(`http://localhost${pathname}`, {
-    headers: { cookie: `hermes-session=${token}` },
+    ...(token ? { headers: { cookie: `hermes-session=${token}` } } : {}),
   });
 }
 
@@ -90,6 +110,17 @@ function replaceFixtureModel(homeDir: string, model: string): void {
   fs.writeFileSync(configPath, config, 'utf8');
 }
 
+function replaceFixtureDeliveryError(homeDir: string, deliveryError: string): void {
+  const jobsPath = path.join(homeDir, 'cron', 'jobs.json');
+  const file = JSON.parse(fs.readFileSync(jobsPath, 'utf8')) as {
+    jobs: Array<{ name?: string; last_delivery_error?: string | null }>;
+  };
+  const job = file.jobs.find((candidate) => candidate.name === 'balance-watch');
+  assert.ok(job);
+  job.last_delivery_error = deliveryError;
+  fs.writeFileSync(jobsPath, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+}
+
 before(async () => {
   const a = await genHermesHome(path.join(tempRoot, 'tenant-a'));
   const b = await genHermesHome(path.join(tempRoot, 'tenant-b'));
@@ -97,6 +128,12 @@ before(async () => {
   bHome = b.fullDir;
   replaceFixtureModel(aHome, A_MODEL);
   replaceFixtureModel(bHome, B_MODEL);
+  replaceFixtureDeliveryError(bHome, `failed reading ${aHome}`);
+  fs.writeFileSync(regularFileHome, 'not a tenant home', 'utf8');
+  fs.symlinkSync(aHome, symlinkHome, 'dir');
+  const backendErrorCronDir = path.join(backendErrorHome, 'cron');
+  fs.mkdirSync(backendErrorCronDir, { recursive: true });
+  fs.symlinkSync('jobs.json', path.join(backendErrorCronDir, 'jobs.json'));
   process.env.HERMES_OPENCLAW_INSTANCES = configuredInstances();
 });
 
@@ -112,24 +149,30 @@ after(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-test('tenant binding persists on insert and conflict update and is read from the session row', () => {
+test('tenant binding persists on insert and conflict update and is read from the session row', async () => {
   const first = upsertStagesnapUser('aaa');
   assert.equal(first.tenant_instance_id, 'stagesnap:aaa');
   getDb().prepare('UPDATE users SET tenant_instance_id = ? WHERE id = ?').run('tampered', first.id);
   const second = upsertStagesnapUser('aaa');
   assert.equal(second.tenant_instance_id, 'stagesnap:aaa');
+
+  const response = await getTenantAgent(request('/api/tenant/agent', createSession(first.id)));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.instanceId, 'stagesnap:aaa');
+  assert.equal(body.profiles[0].model, A_MODEL);
 });
 
-test('tenant A agent handler returns only A profile and accepts matching case-insensitive params', async () => {
-  const token = tokenForTenant('aaa');
-  for (const suffix of ['', '?instance=stagesnap%3Aaaa', '?namespace=STAGESNAP%3AAAA']) {
+test('tenant B agent handler returns only B profile and accepts exact matching params', async () => {
+  const token = tokenForTenant('bbb');
+  for (const suffix of ['', '?instance=stagesnap%3Abbb', '?namespace=stagesnap%3Abbb']) {
     const response = await getTenantAgent(request(`/api/tenant/agent${suffix}`, token));
     assert.equal(response.status, 200, suffix);
     const body = await response.json();
-    assert.equal(body.instanceId, 'stagesnap:aaa');
-    assert.equal(body.profiles[0].name, 'tenant-a-profile');
-    assert.equal(body.profiles[0].model, A_MODEL);
-    assert.doesNotMatch(JSON.stringify(body), new RegExp(B_MODEL));
+    assert.equal(body.instanceId, 'stagesnap:bbb');
+    assert.equal(body.profiles[0].name, 'tenant-b-profile');
+    assert.equal(body.profiles[0].model, B_MODEL);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(A_MODEL));
   }
 });
 
@@ -137,7 +180,9 @@ test('every tenant handler rejects mismatched instance and namespace probes with
   const token = tokenForTenant('aaa');
   const probes = [
     '?instance=stagesnap:bbb',
+    '?instance=STAGESNAP%3AAAA',
     '?namespace=STAGESNAP:BBB',
+    '?namespace=STAGESNAP%3AAAA',
     '?namespace=stagesnap%3Abbb',
   ];
   for (const route of tenantRoutes) {
@@ -165,6 +210,95 @@ test('configured tenant binding with a missing homeDir fails closed', async () =
   const response = await getTenantCron(request('/api/tenant/cron', tokenForTenant('missing-home')));
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: 'tenant_not_provisioned' });
+});
+
+test('regular-file and symlink tenant homes fail closed', async () => {
+  for (const sub of ['regular-file', 'symlink-home']) {
+    const response = await getTenantAgent(request('/api/tenant/agent', tokenForTenant(sub)));
+    assert.equal(response.status, 403, sub);
+    assert.deepEqual(await response.json(), { error: 'tenant_not_provisioned' }, sub);
+  }
+});
+
+test('a non-Hermes configured tenant home fails closed', async () => {
+  const response = await getTenantAgent(
+    request('/api/tenant/agent', tokenForTenant('openclaw-home')),
+  );
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: 'tenant_not_provisioned' });
+});
+
+test('sanitizeForTenant redacts embedded, exact, nested, and array paths but preserves URLs', () => {
+  assert.equal(
+    sanitizeForTenant('failed reading /Users/x/.hermes/profiles/stagesnap:bbb/state.db'),
+    'failed reading [path]',
+  );
+  assert.equal(sanitizeForTenant(bHome), '[path]');
+  assert.deepEqual(
+    sanitizeForTenant({ nested: [{ message: 'see /var/lib/hermes/state.db now' }] }),
+    { nested: [{ message: 'see [path] now' }] },
+  );
+  assert.equal(
+    sanitizeForTenant(
+      'delivery to https://example.com/hooks/a/b failed at /var/lib/hermes/state.db',
+    ),
+    'delivery to https://example.com/hooks/a/b failed at [path]',
+  );
+});
+
+test('sanitizeForTenant removes normalized blocked-key variants', () => {
+  assert.deepEqual(sanitizeForTenant({ systemPrompt: 'secret', safe: 'visible' }), {
+    safe: 'visible',
+  });
+  assert.deepEqual(sanitizeForTenant({ System_Prompt: 'secret' }), {});
+});
+
+test('the cron route applies tenant sanitization to pass-through delivery errors', async () => {
+  const response = await getTenantCron(
+    request('/api/tenant/cron', tokenForTenant('bbb')),
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  const job = body.jobs.find((candidate: { name: string }) => candidate.name === 'balance-watch');
+  assert.equal(job.deliveryError, 'failed reading [path]');
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(aHome));
+});
+
+test('tenant routes return a generic 500 without backend path or message leakage', async () => {
+  const originalConsoleError = console.error;
+  const loggedArgs: unknown[] = [];
+  console.error = (...args: unknown[]) => {
+    loggedArgs.push(...args);
+  };
+  let response: Response;
+  try {
+    response = await getTenantCron(
+      request('/api/tenant/cron', tokenForTenant('backend-error')),
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(response.status, 500);
+  const text = await response.text();
+  assert.deepEqual(JSON.parse(text), { error: 'internal_error' });
+  assert.equal(loggedArgs[0], 'tenant route error');
+  const rawError = String(loggedArgs[1]);
+  assert.match(rawError, new RegExp(backendErrorHome));
+  assert.equal(text.includes(backendErrorHome), false);
+  assert.equal(text.includes(rawError), false);
+  assert.equal(text.includes('EISDIR'), false);
+});
+
+test('all tenant routes reject unauthenticated requests without tenant data', async () => {
+  for (const route of tenantRoutes) {
+    const response = await route.handler(request(route.path));
+    assert.equal(response.status, 403, route.name);
+    const text = await response.text();
+    for (const forbidden of [A_MODEL, B_MODEL, aHome, bHome]) {
+      assert.equal(text.includes(forbidden), false, `${route.name}: ${forbidden}`);
+    }
+  }
 });
 
 test('all tenant handlers strip secrets and absolute fixture paths from full response bodies', async () => {

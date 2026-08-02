@@ -53,10 +53,9 @@ export function resolveTenantBackend(request: Request): {
   if (!instanceId) throw new TenantAccessError('tenant_not_provisioned');
 
   const url = new URL(request.url);
-  const boundId = instanceId.toLocaleLowerCase('en-US');
   for (const parameter of ['instance', 'namespace']) {
     const supplied = url.searchParams.get(parameter);
-    if (supplied !== null && supplied.toLocaleLowerCase('en-US') !== boundId) {
+    if (supplied !== null && supplied !== instanceId) {
       throw new TenantAccessError('tenant_instance_mismatch');
     }
   }
