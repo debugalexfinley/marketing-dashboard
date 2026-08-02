@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "campaign-digest",
+      "agentId": "hermes",
+      "name": "Campaign digest",
+      "enabled": true,
+      "createdAtMs": 4089092400000,
+      "updatedAtMs": 4089092460000,
+      "schedule": {
+        "kind": "cron",
+        "expr": "15 9 * * 1-5",
+        "tz": "America/Chicago"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "skill": "reporting",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "EXPERIMENT_CONTRACT: Review the synthetic campaign and decide SCALE, ITERATE, or KILL."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "fixture"
+      },
+      "state": {
+        "lastRunAtMs": 4089096000000,
+        "lastStatus": "ok",
+        "lastDurationMs": 2400,
+        "nextRunAtMs": 4089178800000
+      }
+    },
+    {
+      "id": "lead-refresh",
+      "agentId": "apollo",
+      "name": "Lead refresh",
+      "enabled": true,
+      "createdAtMs": 4089006000000,
+      "updatedAtMs": 4089006060000,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 21600000,
+        "staggerMs": 300000
+      },
+      "skill": "lead-research",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Refresh the synthetic lead list."
+      },
+      "state": {
+        "lastRunAtMs": 4089099600000,
+        "lastStatus": "error",
+        "lastDurationMs": 1200,
+        "nextRunAtMs": 4089121200000
+      }
+    },
+    {
+      "jobId": "one-time-review",
+      "agentId": "hermes",
+      "name": "One-time review",
+      "enabled": false,
+      "createdAtMs": 4088919600000,
+      "updatedAtMs": 4088919660000,
+      "schedule": {
+        "kind": "at",
+        "at": "2099-08-15T16:30:00.000Z"
+      },
+      "skill": "campaign-review",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Perform the one-time synthetic review."
+      },
+      "state": {}
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "route": "/api/cron/jobs",
+  "request": "/api/cron/jobs?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "jobs": [
+      {
+        "id": "campaign-digest",
+        "agentId": "hermes",
+        "name": "Campaign digest",
+        "enabled": true,
+        "createdAtMs": "<TIMESTAMP>",
+        "updatedAtMs": "<TIMESTAMP>",
+        "schedule": {
+          "kind": "cron",
+          "expr": "15 9 * * 1-5",
+          "tz": "America/Chicago"
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "now",
+        "skill": "reporting",
+        "payload": {
+          "kind": "agentTurn",
+          "message": "EXPERIMENT_CONTRACT: Review the synthetic campaign and decide SCALE, ITERATE, or KILL."
+        },
+        "delivery": {
+          "mode": "announce",
+          "channel": "fixture"
+        },
+        "state": {
+          "lastRunAtMs": "<TIMESTAMP>",
+          "lastStatus": "ok",
+          "lastDurationMs": 2400,
+          "nextRunAtMs": "<TIMESTAMP>"
+        },
+        "jobId": "campaign-digest"
+      },
+      {
+        "id": "lead-refresh",
+        "agentId": "apollo",
+        "name": "Lead refresh",
+        "enabled": true,
+        "createdAtMs": "<TIMESTAMP>",
+        "updatedAtMs": "<TIMESTAMP>",
+        "schedule": {
+          "kind": "every",
+          "everyMs": 21600000,
+          "staggerMs": 300000
+        },
+        "skill": "lead-research",
+        "payload": {
+          "kind": "agentTurn",
+          "message": "Refresh the synthetic lead list."
+        },
+        "state": {
+          "lastRunAtMs": "<TIMESTAMP>",
+          "lastStatus": "error",
+          "lastDurationMs": 1200,
+          "nextRunAtMs": "<TIMESTAMP>"
+        },
+        "jobId": "lead-refresh"
+      },
+      {
+        "jobId": "one-time-review",
+        "agentId": "hermes",
+        "name": "One-time review",
+        "enabled": false,
+        "createdAtMs": "<TIMESTAMP>",
+        "updatedAtMs": "<TIMESTAMP>",
+        "schedule": {
+          "kind": "at",
+          "at": "<TIMESTAMP>"
+        },
+        "skill": "campaign-review",
+        "payload": {
+          "kind": "agentTurn",
+          "message": "Perform the one-time synthetic review."
+        },
+        "state": {},
+        "id": "one-time-review"
+      }
+    ],
+    "can_write": false
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "route": "/api/instances",
+  "request": "/api/instances",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "default_instance": "default",
+    "instances": [
+      {
+        "id": "default",
+        "label": "Default"
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "decay_half_life_days": 60,
+  "min_effective_confidence": 0.4,
+  "min_keep_confidence": 0.6,
+  "low_confidence_prune_days": 21,
+  "default_ttl_days": 120
+}

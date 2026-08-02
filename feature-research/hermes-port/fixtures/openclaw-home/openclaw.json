@@ -1,0 +1,44 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "synthetic/default-model",
+        "fallbacks": ["synthetic/default-fallback"]
+      }
+    },
+    "list": [
+      {
+        "id": "hermes",
+        "name": "Hermes Fixture",
+        "displayName": "Hermes Fixture",
+        "dirName": "hermes",
+        "workspace": "feature-research/hermes-port/fixtures/openclaw-home/workspace-hermes",
+        "model": {
+          "primary": "synthetic/hermes-primary",
+          "fallbacks": ["synthetic/hermes-fallback"]
+        },
+        "identity": {
+          "emoji": "🏛️",
+          "theme": "marketing operations"
+        },
+        "tools": {
+          "allow": ["read", "search"]
+        }
+      },
+      {
+        "id": "apollo",
+        "name": "Apollo Fixture",
+        "displayName": "Apollo Fixture",
+        "dirName": "apollo",
+        "workspace": "feature-research/hermes-port/fixtures/openclaw-home/workspace-apollo",
+        "identity": {
+          "emoji": "🎯",
+          "theme": "sales research"
+        },
+        "tools": {
+          "allow": ["read"]
+        }
+      }
+    ]
+  }
+}

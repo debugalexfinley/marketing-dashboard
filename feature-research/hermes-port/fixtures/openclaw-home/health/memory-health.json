@@ -1,0 +1,12 @@
+{
+  "generated_at": "2099-07-31T12:00:00.000Z",
+  "status": "healthy",
+  "collective_total": 24,
+  "hot_memory": 8,
+  "cold_memory": 12,
+  "never_accessed": 4,
+  "agents": {
+    "hermes": { "entries": 14, "healthy": 13, "stale": 1 },
+    "apollo": { "entries": 10, "healthy": 9, "stale": 1 }
+  }
+}

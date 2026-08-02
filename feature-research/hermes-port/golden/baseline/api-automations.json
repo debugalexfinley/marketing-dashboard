@@ -1,0 +1,56 @@
+{
+  "route": "/api/automations",
+  "request": "/api/automations?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "approvals": [],
+    "skill_executions": [],
+    "schedule": [],
+    "hourly_activity": [],
+    "experiment": {
+      "contract": {
+        "total_jobs": 3,
+        "with_contract": 1,
+        "without_contract": 2,
+        "compliance_pct": 33,
+        "missing_job_ids": [
+          "lead-refresh",
+          "unknown"
+        ]
+      },
+      "decisions": {
+        "window_days": 7,
+        "counts": {
+          "SCALE": 1,
+          "ITERATE": 1,
+          "KILL": 0
+        },
+        "recent": [
+          {
+            "job_id": "campaign-digest",
+            "ts": "<TIMESTAMP>",
+            "status": "ok",
+            "decision": "ITERATE",
+            "snippet": "Synthetic follow-up decision: ITERATE\n"
+          },
+          {
+            "job_id": "campaign-digest",
+            "ts": "<TIMESTAMP>",
+            "status": "ok",
+            "decision": "SCALE",
+            "snippet": "Synthetic review decision: SCALE\n"
+          }
+        ]
+      }
+    },
+    "summary": {
+      "pending_approvals": 0,
+      "total_executions_30d": 0,
+      "active_cron_jobs": 0,
+      "experiment_compliance_pct": 33,
+      "experiment_decisions_7d": 2
+    }
+  }
+}

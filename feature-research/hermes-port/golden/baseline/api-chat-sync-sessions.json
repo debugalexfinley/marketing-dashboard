@@ -1,0 +1,9 @@
+{
+  "route": "/api/chat/sync-sessions",
+  "request": "/api/chat/sync-sessions?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "sessions": []
+  }
+}

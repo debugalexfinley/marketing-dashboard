@@ -1,0 +1,7 @@
+#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "validate" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '{"valid":true,"source":"golden-fixture"}'
+  exit 0
+fi
+printf '%s\n' 'golden fixture openclaw: unsupported command' >&2
+exit 2

@@ -1,0 +1,16 @@
+{
+  "route": "/api/agents/workspace",
+  "request": "/api/agents/workspace?instance=default&rootId=workspace-hermes&path=briefs%2Fcampaign-brief.txt",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "rootId": "workspace-hermes",
+    "rootLabel": "workspace-hermes",
+    "kind": "workspace",
+    "writable": true,
+    "path": "briefs/campaign-brief.txt",
+    "size": 104,
+    "mtimeMs": "<TIMESTAMP>",
+    "content": "Campaign: Synthetic Autumn Launch\nGoal: Exercise the golden workspace response with deterministic text.\n"
+  }
+}

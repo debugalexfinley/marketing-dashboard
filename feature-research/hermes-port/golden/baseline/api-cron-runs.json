@@ -1,0 +1,25 @@
+{
+  "route": "/api/cron/runs",
+  "request": "/api/cron/runs?instance=default&id=campaign-digest",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "runs": [
+      {
+        "ts": "<TIMESTAMP>",
+        "jobId": "campaign-digest",
+        "status": "ok",
+        "summary": "Synthetic review decision: SCALE",
+        "durationMs": 2400
+      },
+      {
+        "ts": "<TIMESTAMP>",
+        "jobId": "campaign-digest",
+        "status": "ok",
+        "summary": "Synthetic follow-up decision: ITERATE",
+        "durationMs": 1800
+      }
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "route": "/api/agents",
+  "request": "/api/agents?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": [
+    {
+      "id": "hermes",
+      "name": "Hermes Fixture",
+      "emoji": "🏛️",
+      "role": "Marketing operation",
+      "description": "Hermes Fixture autonomous agent.",
+      "model": "synthetic/hermes-primary",
+      "fallbacks": [
+        "synthetic/hermes-fallback"
+      ],
+      "tools": [
+        "read",
+        "search"
+      ],
+      "skills": [],
+      "cronJobs": [],
+      "workspace": "feature-research/hermes-port/fixtures/openclaw-home/workspace-hermes",
+      "status": "planned",
+      "stats": {
+        "actions_today": 0,
+        "actions_week": 0,
+        "tokens_today": 0,
+        "tokens_week": 300,
+        "cost_today": 0,
+        "cost_week": 0.0044,
+        "last_action": null,
+        "last_action_at": null,
+        "top_skills": []
+      },
+      "recent_activity": []
+    },
+    {
+      "id": "apollo",
+      "name": "Apollo Fixture",
+      "emoji": "🎯",
+      "role": "Ale  re Earch",
+      "description": "Apollo Fixture autonomous agent.",
+      "model": "synthetic/default-model",
+      "fallbacks": [
+        "synthetic/default-fallback"
+      ],
+      "tools": [
+        "read"
+      ],
+      "skills": [],
+      "cronJobs": [],
+      "workspace": "feature-research/hermes-port/fixtures/openclaw-home/workspace-apollo",
+      "status": "planned",
+      "stats": {
+        "actions_today": 0,
+        "actions_week": 0,
+        "tokens_today": 0,
+        "tokens_week": 0,
+        "cost_today": 0,
+        "cost_week": 0,
+        "last_action": null,
+        "last_action_at": null,
+        "top_skills": []
+      },
+      "recent_activity": []
+    }
+  ]
+}

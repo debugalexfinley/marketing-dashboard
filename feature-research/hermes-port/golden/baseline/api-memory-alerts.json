@@ -1,0 +1,18 @@
+{
+  "route": "/api/memory-alerts",
+  "request": "/api/memory-alerts?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "generated_at": "<TIMESTAMP>",
+    "severity": "warning",
+    "alerts": [
+      {
+        "id": "duplicate-campaign-fact",
+        "kind": "duplicate",
+        "agent": "hermes",
+        "message": "Two synthetic campaign facts overlap."
+      }
+    ]
+  }
+}

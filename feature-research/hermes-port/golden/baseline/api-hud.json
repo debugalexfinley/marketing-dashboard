@@ -1,0 +1,15 @@
+{
+  "route": "/api/hud",
+  "request": "/api/hud?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "sending_paused": false,
+    "paused_reason": null,
+    "approvals_pending": 0,
+    "approvals_stale": 0,
+    "cron_total": 3,
+    "cron_errors": 1
+  }
+}

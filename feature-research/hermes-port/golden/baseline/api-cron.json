@@ -1,0 +1,94 @@
+{
+  "route": "/api/cron",
+  "request": "/api/cron?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "jobs": [
+      {
+        "id": "campaign-digest",
+        "agentId": "hermes",
+        "name": "Campaign digest",
+        "enabled": true,
+        "createdAtMs": "<TIMESTAMP>",
+        "updatedAtMs": "<TIMESTAMP>",
+        "schedule": {
+          "kind": "cron",
+          "expr": "15 9 * * 1-5",
+          "tz": "America/Chicago"
+        },
+        "sessionTarget": "isolated",
+        "wakeMode": "now",
+        "skill": "reporting",
+        "payload": {
+          "kind": "agentTurn",
+          "message": "EXPERIMENT_CONTRACT: Review the synthetic campaign and decide SCALE, ITERATE, or KILL."
+        },
+        "delivery": {
+          "mode": "announce",
+          "channel": "fixture"
+        },
+        "state": {
+          "lastRunAtMs": "<TIMESTAMP>",
+          "lastStatus": "ok",
+          "lastDurationMs": 2400,
+          "nextRunAtMs": "<TIMESTAMP>"
+        },
+        "jobId": "campaign-digest",
+        "lastRun": "<TIMESTAMP>",
+        "lastResult": "<TIMESTAMP> starting campaign-digest\n<TIMESTAMP> loaded synthetic campaign metrics\n<TIMESTAMP> completed campaign-digest status=ok decision=ITERATE"
+      },
+      {
+        "id": "lead-refresh",
+        "agentId": "apollo",
+        "name": "Lead refresh",
+        "enabled": true,
+        "createdAtMs": "<TIMESTAMP>",
+        "updatedAtMs": "<TIMESTAMP>",
+        "schedule": {
+          "kind": "every",
+          "everyMs": 21600000,
+          "staggerMs": 300000
+        },
+        "skill": "lead-research",
+        "payload": {
+          "kind": "agentTurn",
+          "message": "Refresh the synthetic lead list."
+        },
+        "state": {
+          "lastRunAtMs": "<TIMESTAMP>",
+          "lastStatus": "error",
+          "lastDurationMs": 1200,
+          "nextRunAtMs": "<TIMESTAMP>"
+        },
+        "jobId": "lead-refresh",
+        "lastRun": null,
+        "lastResult": null
+      },
+      {
+        "jobId": "one-time-review",
+        "agentId": "hermes",
+        "name": "One-time review",
+        "enabled": false,
+        "createdAtMs": "<TIMESTAMP>",
+        "updatedAtMs": "<TIMESTAMP>",
+        "schedule": {
+          "kind": "at",
+          "at": "<TIMESTAMP>"
+        },
+        "skill": "campaign-review",
+        "payload": {
+          "kind": "agentTurn",
+          "message": "Perform the one-time synthetic review."
+        },
+        "state": {},
+        "id": "one-time-review",
+        "lastRun": null,
+        "lastResult": null
+      }
+    ],
+    "can_write": false,
+    "can_templates_write": true
+  }
+}

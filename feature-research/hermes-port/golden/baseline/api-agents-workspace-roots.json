@@ -1,0 +1,53 @@
+{
+  "route": "/api/agents/workspace-roots",
+  "request": "/api/agents/workspace-roots?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "roots": [
+      {
+        "id": "agent-workspace",
+        "label": "Agent Workspace",
+        "kind": "agent-workspace",
+        "writable": true,
+        "agents": [
+          "Hermes Fixture"
+        ]
+      },
+      {
+        "id": "workspace-apollo",
+        "label": "Apollo",
+        "kind": "workspace",
+        "writable": true,
+        "agents": [
+          "Apollo Fixture"
+        ]
+      },
+      {
+        "id": "workspace-hermes",
+        "label": "Hermes",
+        "kind": "workspace",
+        "writable": true
+      },
+      {
+        "id": "agent:apollo",
+        "label": "Apollo Fixture",
+        "kind": "agent",
+        "writable": true
+      },
+      {
+        "id": "agent:hermes",
+        "label": "Hermes Fixture",
+        "kind": "agent",
+        "writable": true
+      },
+      {
+        "id": "openclaw",
+        "label": ".openclaw",
+        "kind": "openclaw",
+        "writable": false
+      }
+    ]
+  }
+}

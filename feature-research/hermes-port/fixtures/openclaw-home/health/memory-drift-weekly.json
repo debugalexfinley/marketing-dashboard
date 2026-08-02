@@ -1,0 +1,12 @@
+{
+  "generated_at": "2099-07-31T12:05:00.000Z",
+  "window_days": 7,
+  "contradictions": 1,
+  "duplicates": 2,
+  "weak_agents": 1,
+  "hot_memory": 8,
+  "cold_memory": 12,
+  "never_accessed": 4,
+  "collective_total": 24,
+  "notes": ["Synthetic weekly drift fixture"]
+}

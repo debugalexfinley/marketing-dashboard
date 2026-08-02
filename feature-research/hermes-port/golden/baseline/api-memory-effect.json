@@ -1,0 +1,41 @@
+{
+  "route": "/api/memory-effect",
+  "request": "/api/memory-effect?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "namespace": "default",
+    "available": true,
+    "latest_policy_change": "<TIMESTAMP>",
+    "baseline_at": "<TIMESTAMP>",
+    "current_at": "<TIMESTAMP>",
+    "deltas": {
+      "contradictions": {
+        "before": 3,
+        "after": 1,
+        "delta": -2
+      },
+      "duplicates": {
+        "before": 5,
+        "after": 2,
+        "delta": -3
+      },
+      "weak_agents": {
+        "before": 2,
+        "after": 1,
+        "delta": -1
+      },
+      "hot_memory": {
+        "before": 6,
+        "after": 8,
+        "delta": 2
+      },
+      "never_accessed_ratio": {
+        "before": 0.25,
+        "after": 0.16666666666666666,
+        "delta": -0.08333333333333334
+      }
+    }
+  }
+}

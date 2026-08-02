@@ -1,0 +1,2 @@
+Campaign: Synthetic Autumn Launch
+Goal: Exercise the golden workspace response with deterministic text.

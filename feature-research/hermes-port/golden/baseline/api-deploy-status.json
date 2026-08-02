@@ -1,0 +1,39 @@
+{
+  "route": "/api/deploy-status",
+  "request": "/api/deploy-status?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "service": {
+      "name": "hermes-golden-fixture.service",
+      "state": "unknown"
+    },
+    "deploy": {
+      "script_path": "<FIXTURE_PATH>/bin/golden-deploy-marker",
+      "lock_file": "<FIXTURE_PATH>/logs/deploy/not-running.lock",
+      "lock_exists": false,
+      "running_pids": []
+    },
+    "openclaw": {
+      "bin": "<FIXTURE_PATH>/bin/openclaw",
+      "config_validate": {
+        "available": true,
+        "ok": true,
+        "details": {
+          "valid": true,
+          "source": "golden-fixture"
+        }
+      }
+    },
+    "latest_log": {
+      "path": "<FIXTURE_PATH>/logs/deploy/hermes-deploy-20990731.log",
+      "mtime": "<TIMESTAMP>",
+      "tail": [
+        "<TIMESTAMP> deploy started for synthetic revision fixture-001",
+        "<TIMESTAMP> configuration validated",
+        "<TIMESTAMP> deploy completed successfully"
+      ]
+    }
+  }
+}

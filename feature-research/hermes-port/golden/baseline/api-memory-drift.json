@@ -1,0 +1,20 @@
+{
+  "route": "/api/memory-drift",
+  "request": "/api/memory-drift?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "generated_at": "<TIMESTAMP>",
+    "window_days": 7,
+    "contradictions": 1,
+    "duplicates": 2,
+    "weak_agents": 1,
+    "hot_memory": 8,
+    "cold_memory": 12,
+    "never_accessed": 4,
+    "collective_total": 24,
+    "notes": [
+      "Synthetic weekly drift fixture"
+    ]
+  }
+}

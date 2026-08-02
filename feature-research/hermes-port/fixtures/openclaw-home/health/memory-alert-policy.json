@@ -1,0 +1,7 @@
+{
+  "window_days": 14,
+  "alert_contradictions_threshold": 2,
+  "alert_duplicates_threshold": 3,
+  "alert_weak_agents_threshold": 2,
+  "alert_never_ratio_threshold": 0.5
+}

@@ -1,0 +1,12 @@
+{
+  "generated_at": "2099-07-31T12:10:00.000Z",
+  "severity": "warning",
+  "alerts": [
+    {
+      "id": "duplicate-campaign-fact",
+      "kind": "duplicate",
+      "agent": "hermes",
+      "message": "Two synthetic campaign facts overlap."
+    }
+  ]
+}

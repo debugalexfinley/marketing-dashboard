@@ -1,0 +1,1 @@
+{"type":"message","id":"msg-metis-001","timestamp":"2099-07-29T09:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Filesystem-only agent session fixture."}],"usage":{"totalTokens":50,"cost":{"total":0.0005}}}}
