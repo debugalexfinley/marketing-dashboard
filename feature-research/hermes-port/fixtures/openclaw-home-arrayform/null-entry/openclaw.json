@@ -1,0 +1,11 @@
+{
+  "agents": {
+    "list": [
+      null,
+      {
+        "id": "hermes",
+        "name": "Hermes Null Entry Fixture"
+      }
+    ]
+  }
+}

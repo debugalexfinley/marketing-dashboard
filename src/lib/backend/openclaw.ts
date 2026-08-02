@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   getAgentWorkspaceRoot,
+  isAllowedWorkspaceWritePath,
   WORKSPACE_MAX_FILE_BYTES,
   resolveWorkspacePath as resolveWorkspaceRelativePath,
 } from '../agent-workspace';
@@ -240,7 +241,12 @@ function readOpenClawConfig(configPath: string): OpenClawConfig | null {
   }
 }
 
-function configuredAgentList(config: OpenClawConfig | null): OpenClawAgent[] {
+function configuredAgentListStrict(config: OpenClawConfig | null): OpenClawAgent[] {
+  const agents = config?.agents;
+  return !Array.isArray(agents) && Array.isArray(agents?.list) ? agents.list : [];
+}
+
+function configuredAgentListWithTopLevel(config: OpenClawConfig | null): OpenClawAgent[] {
   const agents = config?.agents;
   if (Array.isArray(agents)) return agents;
   return Array.isArray(agents?.list) ? agents.list : [];
@@ -307,8 +313,8 @@ export function getOpenClawAgents(
       ? agentsConfig.defaults.workspace.trim()
       : '';
   const configuredById = new Map<string, OpenClawAgent>();
-  for (const entry of configuredAgentList(config)) {
-    if (typeof entry.id !== 'string' || !entry.id.trim()) continue;
+  for (const entry of configuredAgentListStrict(config)) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id.trim()) continue;
     configuredById.set(normalizeAgentId(entry.id), entry);
   }
 
@@ -650,7 +656,8 @@ type WorkspaceAgentConfig = {
 function readWorkspaceAgentList(configPath: string): WorkspaceAgentConfig[] {
   const config = readOpenClawConfig(configPath);
   const out: WorkspaceAgentConfig[] = [];
-  for (const item of configuredAgentList(config)) {
+  for (const item of configuredAgentListWithTopLevel(config)) {
+    if (!item || typeof item !== 'object') continue;
     const name = String(item.name ?? '').trim();
     if (!name) continue;
     let workspace: string | undefined;
@@ -834,16 +841,38 @@ export class OpenClawBackend implements AgentBackend {
     const agentsConfig = !Array.isArray(config?.agents) ? config?.agents : undefined;
     const defaults = parseModelRouting(agentsConfig?.defaults?.model);
     const routing: ModelRouting = {};
-    for (const agent of configuredAgentList(config)) {
-      if (typeof agent.id !== 'string' || !agent.id.trim()) continue;
+    for (const agent of configuredAgentListStrict(config)) {
+      if (!agent || typeof agent.id !== 'string' || !agent.id.trim()) continue;
       const selected = parseModelRouting(agent.model) ?? defaults;
       if (selected) routing[agent.id] = selected;
+    }
+    if (defaults) {
+      for (const agent of configuredAgentListStrict(config)) {
+        if (!agent || typeof agent.id !== 'string' || !agent.id.trim()) continue;
+        const normalizedId = normalizeAgentId(agent.id);
+        if (!(normalizedId in routing)) routing[normalizedId] = defaults;
+      }
     }
     return routing;
   }
 
   async listCronJobs(): Promise<CronJobsFile> {
     return readCronJobsFile(this.paths.cronDir);
+  }
+
+  async readCronJobsTolerant(): Promise<unknown[]> {
+    try {
+      const parsed: unknown = JSON.parse(
+        await fsPromises.readFile(path.join(this.paths.cronDir, 'jobs.json'), 'utf-8'),
+      );
+      return Array.isArray(parsed)
+        ? parsed
+        : isRecord(parsed) && Array.isArray(parsed.jobs)
+          ? parsed.jobs
+          : [];
+    } catch {
+      return [];
+    }
   }
 
   async readRawCronJobs(): Promise<CronJobConfig[]> {
@@ -862,9 +891,7 @@ export class OpenClawBackend implements AgentBackend {
       const parsed = JSON.parse(
         await fsPromises.readFile(path.join(this.paths.cronDir, 'jobs.json'), 'utf-8'),
       ) as { jobs?: unknown };
-      if (parsed.jobs == null) return [];
-      if (!Array.isArray(parsed.jobs)) throw new TypeError('data.jobs is not iterable');
-      return parsed.jobs as CronJobConfig[];
+      return (parsed.jobs || []) as CronJobConfig[];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
@@ -892,7 +919,11 @@ export class OpenClawBackend implements AgentBackend {
   }
 
   async readCronRuns(jobId: string, limit: number): Promise<CronRun[]> {
-    return (await this.readCronRunsInfo(jobId, limit)).runs;
+    try {
+      return (await this.readCronRunsInfo(jobId, limit)).runs;
+    } catch {
+      return [];
+    }
   }
 
   async readCronRunsInfo(
@@ -945,29 +976,31 @@ export class OpenClawBackend implements AgentBackend {
 
   async readSessions(agentId: string): Promise<SessionFileRef[]> {
     const sessionsDir = path.join(this.paths.agentsDir, agentId, 'sessions');
+    let names: string[];
     try {
-      const names = (await fsPromises.readdir(sessionsDir)).filter((name) => name.endsWith('.jsonl'));
-      const refs: SessionFileRef[] = [];
-      for (const name of names) {
-        const filePath = path.join(sessionsDir, name);
-        try {
-          const stat = await fsPromises.stat(filePath);
-          refs.push({
-            path: filePath,
-            name,
-            sessionId: name.replace('.jsonl', ''),
-            agentId,
-            mtimeMs: stat.mtimeMs,
-            size: stat.size,
-          });
-        } catch {
-          // Match the current best-effort session walker.
-        }
-      }
-      return refs;
-    } catch {
-      return [];
+      names = (await fsPromises.readdir(sessionsDir)).filter((name) => name.endsWith('.jsonl'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
     }
+    const refs: SessionFileRef[] = [];
+    for (const name of names) {
+      const filePath = path.join(sessionsDir, name);
+      try {
+        const stat = await fsPromises.stat(filePath);
+        refs.push({
+          path: filePath,
+          name,
+          sessionId: name.replace('.jsonl', ''),
+          agentId,
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+        });
+      } catch {
+        // Match the current best-effort session walker.
+      }
+    }
+    return refs;
   }
 
   async readSessionEntries(
@@ -1034,8 +1067,8 @@ export class OpenClawBackend implements AgentBackend {
     return sendAgentMessage(agentId, message, sessionId);
   }
 
-  async sendOrchestratorMessage(message: string): Promise<CommandResult> {
-    return sendOrchestratorMessage(message);
+  async sendOrchestratorMessage(message: string, sessionId?: string): Promise<CommandResult> {
+    return sendOrchestratorMessage(message, sessionId);
   }
 
   async validateConfig(): Promise<CommandResult> {
@@ -1129,25 +1162,27 @@ export class OpenClawBackend implements AgentBackend {
 
   async readAuditLog(name: string, limit: number): Promise<unknown[]> {
     const safeName = path.basename(name).replace(/\.jsonl$/, '');
+    let raw: string;
     try {
-      const lines = (await fsPromises.readFile(
+      raw = await fsPromises.readFile(
         path.join(this.paths.logsDir, `${safeName}.jsonl`),
         'utf-8',
-      )).split('\n');
-      const entries: unknown[] = [];
-      for (const line of lines) {
-        const value = line.trim();
-        if (!value) continue;
-        try {
-          entries.push(JSON.parse(value));
-        } catch {
-          // Skip malformed audit lines.
-        }
-      }
-      return limit > 0 ? entries.slice(-limit) : entries;
-    } catch {
-      return [];
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
     }
+    const entries: unknown[] = [];
+    for (const line of raw.split('\n')) {
+      const value = line.trim();
+      if (!value) continue;
+      try {
+        entries.push(JSON.parse(value));
+      } catch {
+        // Skip malformed audit lines.
+      }
+    }
+    return limit > 0 ? entries.slice(-limit) : entries;
   }
 
   async readDeployLogs(): Promise<string[]> {
@@ -1380,6 +1415,11 @@ export class OpenClawBackend implements AgentBackend {
     relPath: string,
     content: string,
   ): Promise<WorkspaceMutationResult> {
+    assertWorkspaceWriteAllowed();
+    if (!isAllowedWorkspaceWritePath(relPath)) return { ok: false, error: 'Invalid path' };
+    if (Buffer.byteLength(content, 'utf-8') > WORKSPACE_MAX_FILE_BYTES) {
+      return { ok: false, error: 'File too large' };
+    }
     const root = await this.requireWorkspaceRoot(rootId);
     if (!root.writable) return { ok: false, error: 'Root is read-only' };
     const abs = resolveWorkspaceRelativePath(root.abs, relPath);
@@ -1394,6 +1434,11 @@ export class OpenClawBackend implements AgentBackend {
     relPath: string,
     content: string,
   ): Promise<WorkspaceMutationResult> {
+    assertWorkspaceWriteAllowed();
+    if (!isAllowedWorkspaceWritePath(relPath)) return { ok: false, error: 'Invalid path' };
+    if (Buffer.byteLength(content, 'utf-8') > WORKSPACE_MAX_FILE_BYTES) {
+      return { ok: false, error: 'File too large' };
+    }
     const root = await this.requireWorkspaceRoot(rootId);
     if (!root.writable) return { ok: false, error: 'Root is read-only' };
     const abs = resolveWorkspaceRelativePath(root.abs, relPath);
@@ -1409,6 +1454,8 @@ export class OpenClawBackend implements AgentBackend {
   }
 
   async deleteWorkspaceFile(rootId: string, relPath: string): Promise<WorkspaceMutationResult> {
+    assertWorkspaceWriteAllowed();
+    if (!isAllowedWorkspaceWritePath(relPath)) return { ok: false, error: 'Invalid path' };
     const root = await this.requireWorkspaceRoot(rootId);
     if (!root.writable) return { ok: false, error: 'Root is read-only' };
     const abs = resolveWorkspaceRelativePath(root.abs, relPath);

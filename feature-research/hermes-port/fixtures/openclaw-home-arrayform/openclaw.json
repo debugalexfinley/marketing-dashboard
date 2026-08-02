@@ -1,0 +1,11 @@
+{
+  "agents": [
+    {
+      "id": "hermes",
+      "name": "Hermes Array Fixture",
+      "displayName": "Hermes Array Fixture",
+      "dirName": "hermes",
+      "workspace": "feature-research/hermes-port/fixtures/openclaw-home-arrayform/workspace-hermes"
+    }
+  ]
+}

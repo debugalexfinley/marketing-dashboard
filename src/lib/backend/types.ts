@@ -153,7 +153,7 @@ export type WorkspaceReadResult =
 
 export type WorkspaceMutationResult =
   | { ok: true }
-  | { ok: false; error: 'Root is read-only' | 'Invalid path' | 'Not found' };
+  | { ok: false; error: 'Root is read-only' | 'Invalid path' | 'Not found' | 'File too large' };
 
 export type DeployStatus = {
   serviceName: string;
@@ -217,6 +217,7 @@ export interface AgentBackend {
   listConfiguredAgents(): Promise<AgentDefinition[]>;
   readModelRouting(): Promise<ModelRouting>;
   listCronJobs(): Promise<CronJobsFile>;
+  readCronJobsTolerant(): Promise<unknown[]>;
   readRawCronJobs(): Promise<CronJobConfig[]>;
   readCronNotificationJobs(): Promise<CronJobConfig[] | null>;
   writeCronJobs(file: CronJobsFile): Promise<void>;
@@ -235,8 +236,9 @@ export interface AgentBackend {
     fromOffset: number,
   ): Promise<{ entries: SessionEntry[]; nextOffset: number }>;
   readSessionUsage(agentId: string): Promise<AgentUsageTotals>;
+  /** CommandResult supersets the former { response, sessionId? } shape, so existing destructuring is unaffected. */
   sendAgentMessage(agentId: string, message: string, sessionId?: string): Promise<CommandResult>;
-  sendOrchestratorMessage(message: string): Promise<CommandResult>;
+  sendOrchestratorMessage(message: string, sessionId?: string): Promise<CommandResult>;
   validateConfig(): Promise<CommandResult>;
   readHealthReport(kind: HealthReportKind): Promise<unknown | null>;
   readRequiredHealthReport(kind: HealthReportKind): Promise<unknown | null>;

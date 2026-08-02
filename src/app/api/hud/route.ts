@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     let cron_total = 0;
     let cron_errors = 0;
     try {
-      const jobs = (await backend.listCronJobs()).jobs as unknown[];
+      const jobs = await backend.readCronJobsTolerant();
       cron_total = jobs.length;
       cron_errors = jobs.filter((j) => {
         if (!isRecord(j)) return false;

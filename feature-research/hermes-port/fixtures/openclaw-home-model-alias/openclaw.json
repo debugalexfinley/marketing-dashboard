@@ -1,0 +1,20 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "synthetic/default-model",
+        "fallbacks": ["synthetic/default-fallback"]
+      }
+    },
+    "list": [
+      {
+        "id": "marketing",
+        "name": "Aliased Hermes",
+        "model": {
+          "primary": "synthetic/alias-model",
+          "fallbacks": ["synthetic/alias-fallback"]
+        }
+      }
+    ]
+  }
+}

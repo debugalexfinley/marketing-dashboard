@@ -5,7 +5,7 @@
 
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -23,11 +23,53 @@ const repoRoot = path.resolve(scriptDir, '../../..');
 const fixtureRoot = path.join(repoRoot, 'feature-research/hermes-port/fixtures/openclaw-home');
 
 function parseArgs(argv) {
+  if (argv.includes('--check')) {
+    if (argv.length !== 1) throw new Error('Usage: node capture.mjs --check');
+    return { check: true };
+  }
   const index = argv.indexOf('--out');
   if (index === -1 || !argv[index + 1] || argv[index + 1].startsWith('--')) {
-    throw new Error('Usage: node capture.mjs --out <dir>');
+    throw new Error('Usage: node capture.mjs --out <dir> | --check');
   }
-  return { outDir: path.resolve(repoRoot, argv[index + 1]) };
+  return { check: false, outDir: path.resolve(repoRoot, argv[index + 1]) };
+}
+
+async function compareJsonDirectories(actualDir, expectedDir) {
+  const jsonNames = async (dir) =>
+    (await readdir(dir)).filter((name) => name.endsWith('.json')).sort();
+  const actualNames = await jsonNames(actualDir);
+  const expectedNames = await jsonNames(expectedDir);
+  const allNames = [...new Set([...actualNames, ...expectedNames])].sort();
+  const mismatches = [];
+
+  for (const name of allNames) {
+    if (!actualNames.includes(name)) {
+      mismatches.push(`${name}: missing from fresh capture`);
+      continue;
+    }
+    if (!expectedNames.includes(name)) {
+      mismatches.push(`${name}: extra file in fresh capture`);
+      continue;
+    }
+    const [actual, expected] = await Promise.all([
+      readFile(path.join(actualDir, name)),
+      readFile(path.join(expectedDir, name)),
+    ]);
+    if (actual.equals(expected)) continue;
+    const sharedLength = Math.min(actual.length, expected.length);
+    let offset = 0;
+    while (offset < sharedLength && actual[offset] === expected[offset]) offset += 1;
+    const prefix = expected.subarray(0, offset).toString('utf8');
+    const line = prefix.split('\n').length;
+    const column = offset - prefix.lastIndexOf('\n');
+    const expectedByte = offset < expected.length ? `0x${expected[offset].toString(16).padStart(2, '0')}` : '<EOF>';
+    const actualByte = offset < actual.length ? `0x${actual[offset].toString(16).padStart(2, '0')}` : '<EOF>';
+    mismatches.push(
+      `${name}: first difference at byte ${offset} (line ${line}, column ${column}); baseline ${expectedByte}, fresh ${actualByte}`,
+    );
+  }
+
+  return { count: expectedNames.length, mismatches };
 }
 
 async function reservePort() {
@@ -145,35 +187,48 @@ async function responseBody(response) {
 }
 
 async function main() {
-  const { outDir } = parseArgs(process.argv.slice(2));
-  const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'hermes-golden-'));
-  const port = await reservePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const env = {
-    ...process.env,
-    HERMES_OPENCLAW_HOME: fixtureRoot,
-    HERMES_DEFAULT_INSTANCE: 'default',
-    HERMES_STATE_DIR: scratchDir,
-    HERMES_DB_PATH: path.join(scratchDir, 'hermes.db'),
-    HERMES_AGENT_WORKSPACE_DIR: path.join(fixtureRoot, 'workspace-hermes'),
-    AUTH_USER: TEST_USER,
-    AUTH_PASS: TEST_PASS,
-    AUTH_COOKIE_SECURE: 'false',
-    API_KEY: 'golden-fixture-api-key',
-    HERMES_ALLOW_POLICY_WRITE: 'false',
-    HERMES_ALLOW_CRON_WRITE: 'false',
-    HERMES_ALLOW_WORKSPACE_WRITE: 'false',
-    HERMES_ADMIN_CLI: path.join(fixtureRoot, 'bin/openclaw'),
-    HERMES_DEPLOY_LOG_DIR: path.join(fixtureRoot, 'logs/deploy'),
-    HERMES_DEPLOY_LOCK_FILE: path.join(fixtureRoot, 'logs/deploy/not-running.lock'),
-    HERMES_DEPLOY_SCRIPT_PATH: path.join(fixtureRoot, 'bin/golden-deploy-marker'),
-    HERMES_SERVICE_NAME: 'hermes-golden-fixture.service',
-    HERMES_HOST_LOCK: 'off',
-    HERMES_USE_DEFAULT_AGENT_META: 'false',
-  };
-
+  const args = parseArgs(process.argv.slice(2));
+  let checkOutDir;
+  let scratchDir;
   let server;
   try {
+    checkOutDir = args.check
+      ? await mkdtemp(path.join(os.tmpdir(), 'hermes-golden-check-'))
+      : null;
+    const outDir = checkOutDir ?? args.outDir;
+    scratchDir = await mkdtemp(path.join(os.tmpdir(), 'hermes-golden-'));
+    const fixtureBinDir = path.join(scratchDir, 'bin');
+    const fixturePgrep = path.join(fixtureBinDir, 'pgrep');
+    await mkdir(fixtureBinDir, { recursive: true });
+    await writeFile(fixturePgrep, '#!/bin/sh\nexit 1\n', 'utf8');
+    await chmod(fixturePgrep, 0o755);
+
+    const port = await reservePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const env = {
+      ...process.env,
+      PATH: `${fixtureBinDir}${path.delimiter}${process.env.PATH || ''}`,
+      HERMES_OPENCLAW_HOME: fixtureRoot,
+      HERMES_DEFAULT_INSTANCE: 'default',
+      HERMES_STATE_DIR: scratchDir,
+      HERMES_DB_PATH: path.join(scratchDir, 'hermes.db'),
+      HERMES_AGENT_WORKSPACE_DIR: path.join(fixtureRoot, 'workspace-hermes'),
+      AUTH_USER: TEST_USER,
+      AUTH_PASS: TEST_PASS,
+      AUTH_COOKIE_SECURE: 'false',
+      API_KEY: 'golden-fixture-api-key',
+      HERMES_ALLOW_POLICY_WRITE: 'false',
+      HERMES_ALLOW_CRON_WRITE: 'false',
+      HERMES_ALLOW_WORKSPACE_WRITE: 'false',
+      HERMES_ADMIN_CLI: path.join(fixtureRoot, 'bin/openclaw'),
+      HERMES_DEPLOY_LOG_DIR: path.join(fixtureRoot, 'logs/deploy'),
+      HERMES_DEPLOY_LOCK_FILE: path.join(fixtureRoot, 'logs/deploy/not-running.lock'),
+      HERMES_DEPLOY_SCRIPT_PATH: path.join(fixtureRoot, 'bin/golden-deploy-marker'),
+      HERMES_SERVICE_NAME: 'hermes-golden-fixture.service',
+      HERMES_HOST_LOCK: 'off',
+      HERMES_USE_DEFAULT_AGENT_META: 'false',
+    };
+
     console.log('Building production app...');
     await run('pnpm', ['build'], { cwd: repoRoot, env, stdio: 'inherit' });
 
@@ -249,9 +304,21 @@ async function main() {
     if (failures.length > 0) {
       throw new Error(`Unexpected 5xx responses: ${failures.join(', ')}`);
     }
+
+    if (args.check) {
+      const baselineDir = path.join(scriptDir, 'baseline');
+      const comparison = await compareJsonDirectories(outDir, baselineDir);
+      if (comparison.mismatches.length > 0) {
+        console.log('\nGolden check failed:');
+        for (const mismatch of comparison.mismatches) console.log(`- ${mismatch}`);
+        throw new Error(`${comparison.mismatches.length} golden file mismatch(es)`);
+      }
+      console.log(`\nGolden check passed: ${comparison.count} JSON files are byte-identical.`);
+    }
   } finally {
     await stopServer(server);
-    await rm(scratchDir, { recursive: true, force: true });
+    if (scratchDir) await rm(scratchDir, { recursive: true, force: true });
+    if (checkOutDir) await rm(checkOutDir, { recursive: true, force: true });
   }
 }
 

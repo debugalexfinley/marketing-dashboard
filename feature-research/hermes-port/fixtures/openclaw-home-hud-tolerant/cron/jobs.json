@@ -1,0 +1,12 @@
+[
+  {
+    "id": "valid-job",
+    "enabled": true,
+    "state": { "lastStatus": "ok" }
+  },
+  {
+    "enabled": true,
+    "state": { "lastStatus": "error" }
+  },
+  "malformed-entry"
+]

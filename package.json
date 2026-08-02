@@ -15,7 +15,8 @@
     "test:e2e": "pnpm build && playwright test",
     "prepare:standalone": "bash scripts/prepare-standalone.sh",
     "build:standalone": "pnpm build && pnpm run prepare:standalone",
-    "postbuild": "pnpm run prepare:standalone"
+    "postbuild": "pnpm run prepare:standalone",
+    "golden:check": "node feature-research/hermes-port/golden/capture.mjs --check"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
