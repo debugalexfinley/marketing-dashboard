@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { validateSession } from '@/lib/auth';
 
 const SESSION_COOKIE = 'hermes-session';
+export const TENANT_ALLOWED_PREFIXES = ['/api/auth/', '/tenant/'];
+
+function isTenantPathAllowed(pathname: string): boolean {
+  return TENANT_ALLOWED_PREFIXES.some((prefix) => (
+    pathname.startsWith(prefix) || pathname === prefix.slice(0, -1)
+  ));
+}
 
 function isHostAllowedByLock(hostName: string): boolean {
   const mode = (process.env.HERMES_HOST_LOCK || 'local').trim().toLowerCase();
@@ -39,6 +47,16 @@ export function proxy(request: NextRequest) {
 
   const sessionToken = request.cookies.get(SESSION_COOKIE)?.value;
   const apiKey = request.headers.get('x-api-key');
+  const sessionUser = sessionToken ? validateSession(sessionToken) : null;
+
+  if (sessionUser?.role === 'tenant' && !isTenantPathAllowed(pathname)) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    }
+    const tenantUrl = request.nextUrl.clone();
+    tenantUrl.pathname = '/tenant';
+    return NextResponse.redirect(tenantUrl);
+  }
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && sessionToken && !(apiKey && apiKey === process.env.API_KEY)) {
     const allowedOrigin = process.env.PUBLIC_BASE_URL

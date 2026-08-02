@@ -5,9 +5,11 @@ import { verifyStagesnapToken } from '@/lib/auth/stagesnapSso';
 const SESSION_COOKIE = 'hermes-session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 const RATE_LIMIT_CAPACITY = 10;
+const GLOBAL_RATE_LIMIT_CAPACITY = 15;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 const rateLimits = new Map<string, { tokens: number; updatedAt: number }>();
+let globalRateLimit: { tokens: number; updatedAt: number } | null = null;
 
 function shouldUseSecureCookies(request: Request): boolean {
   const forced = process.env.AUTH_COOKIE_SECURE?.trim().toLowerCase();
@@ -26,24 +28,48 @@ function shouldUseSecureCookies(request: Request): boolean {
 }
 
 function clientIp(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  return forwarded || request.headers.get('x-real-ip')?.trim() || 'unknown';
+  if (process.env.TRUSTED_PROXY === 'true') {
+    // Safe only behind a trusted proxy that OVERWRITES (not appends to) these headers.
+    const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+    return forwarded || request.headers.get('x-real-ip')?.trim() || 'proxied-unknown';
+  }
+
+  // Standard Route Handler Requests expose no platform connection IP.
+  return 'unproxied';
+}
+
+function takeBucketToken(
+  current: { tokens: number; updatedAt: number } | undefined,
+  capacity: number,
+  now: number,
+): { allowed: boolean; bucket: { tokens: number; updatedAt: number } } {
+  const bucket = current ?? { tokens: capacity, updatedAt: now };
+  const replenished = Math.min(
+    capacity,
+    bucket.tokens + ((now - bucket.updatedAt) * capacity) / RATE_LIMIT_WINDOW_MS,
+  );
+  return {
+    allowed: replenished >= 1,
+    bucket: {
+      tokens: replenished >= 1 ? replenished - 1 : replenished,
+      updatedAt: now,
+    },
+  };
 }
 
 function takeRateLimitToken(request: Request): boolean {
   const now = Date.now();
   const key = clientIp(request);
-  const current = rateLimits.get(key) ?? { tokens: RATE_LIMIT_CAPACITY, updatedAt: now };
-  const replenished = Math.min(
-    RATE_LIMIT_CAPACITY,
-    current.tokens + ((now - current.updatedAt) * RATE_LIMIT_CAPACITY) / RATE_LIMIT_WINDOW_MS,
-  );
-  if (replenished < 1) {
-    rateLimits.set(key, { tokens: replenished, updatedAt: now });
-    return false;
-  }
-  rateLimits.set(key, { tokens: replenished - 1, updatedAt: now });
-  return true;
+  const perKey = takeBucketToken(rateLimits.get(key), RATE_LIMIT_CAPACITY, now);
+  const global = takeBucketToken(globalRateLimit ?? undefined, GLOBAL_RATE_LIMIT_CAPACITY, now);
+  rateLimits.set(key, perKey.bucket);
+  globalRateLimit = global.bucket;
+  return perKey.allowed && global.allowed;
+}
+
+export function resetSsoRateLimitsForTests(): void {
+  rateLimits.clear();
+  globalRateLimit = null;
 }
 
 function cookieValue(request: Request, name: string): string | null {
@@ -58,34 +84,55 @@ function cookieValue(request: Request, name: string): string | null {
   }
 }
 
-function requestToken(request: Request): string | null {
+async function requestToken(request: Request): Promise<string | null> {
   const authorization = request.headers.get('authorization');
   const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
   if (bearer) return bearer;
 
-  const queryToken = new URL(request.url).searchParams.get('token')?.trim();
-  if (queryToken) return queryToken;
+  if (request.method === 'POST') {
+    const contentType = request.headers.get('content-type')?.toLowerCase() ?? '';
+    try {
+      if (contentType.includes('application/json')) {
+        const body = await request.json() as { token?: unknown };
+        if (typeof body?.token === 'string' && body.token.trim()) return body.token.trim();
+      } else if (
+        contentType.includes('application/x-www-form-urlencoded')
+        || contentType.includes('multipart/form-data')
+      ) {
+        const token = await request.formData().then((body) => body.get('token'));
+        if (typeof token === 'string' && token.trim()) return token.trim();
+      }
+    } catch {
+      // Malformed bodies do not prevent the documented cookie fallback.
+    }
+  }
 
   return cookieValue(request, '__Host-__convexAuthJWT')
     || cookieValue(request, '__convexAuthJWT');
 }
 
+function withSecurityHeaders(response: NextResponse): NextResponse {
+  response.headers.set('Cache-Control', 'no-store');
+  response.headers.set('Referrer-Policy', 'no-referrer');
+  return response;
+}
+
 function disabledResponse(): NextResponse {
-  return NextResponse.json({ error: 'not_found' }, { status: 404 });
+  return withSecurityHeaders(NextResponse.json({ error: 'not_found' }, { status: 404 }));
 }
 
 function invalidResponse(): NextResponse {
-  return NextResponse.json({ error: 'invalid_sso_token' }, { status: 401 });
+  return withSecurityHeaders(NextResponse.json({ error: 'invalid_sso_token' }, { status: 401 }));
 }
 
 async function authenticate(request: Request, redirect: boolean): Promise<NextResponse> {
   if (process.env.STAGESNAP_SSO_ENABLED !== 'true') return disabledResponse();
   if (!takeRateLimitToken(request)) {
-    return NextResponse.json({ error: 'rate_limited' }, { status: 429 });
+    return withSecurityHeaders(NextResponse.json({ error: 'rate_limited' }, { status: 429 }));
   }
 
   try {
-    const token = requestToken(request);
+    const token = await requestToken(request);
     if (!token) return invalidResponse();
 
     const { sub } = await verifyStagesnapToken(token);
@@ -94,6 +141,7 @@ async function authenticate(request: Request, redirect: boolean): Promise<NextRe
     const response = redirect
       ? NextResponse.redirect(new URL('/', request.url))
       : NextResponse.json({ ok: true });
+    // This cross-site top-level POST/GET flow needs lax; strict would break the StageSnap navigation.
     response.cookies.set(SESSION_COOKIE, sessionToken, {
       httpOnly: true,
       secure: shouldUseSecureCookies(request),
@@ -101,7 +149,7 @@ async function authenticate(request: Request, redirect: boolean): Promise<NextRe
       maxAge: SESSION_MAX_AGE,
       path: '/',
     });
-    return response;
+    return withSecurityHeaders(response);
   } catch {
     return invalidResponse();
   }

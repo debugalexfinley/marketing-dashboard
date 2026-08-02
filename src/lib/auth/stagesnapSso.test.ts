@@ -17,7 +17,7 @@ const dbPath = path.join(tempDir, 'hermes-test.db');
 process.env.HERMES_DB_PATH = dbPath;
 process.env.AUTH_COOKIE_SECURE = 'false';
 
-import { GET, POST } from '@/app/api/auth/sso/route';
+import { GET, POST, resetSsoRateLimitsForTests } from '@/app/api/auth/sso/route';
 import { requireApiAdmin, requireApiCapability, requireApiEditor } from '@/lib/api-auth';
 import {
   createSession,
@@ -66,6 +66,8 @@ beforeEach(() => {
   process.env.STAGESNAP_SSO_ENABLED = 'true';
   process.env.STAGESNAP_SSO_AUDIENCE = PROD_AUDIENCE;
   process.env.STAGESNAP_SSO_JWKS_TTL_MS = '600000';
+  delete process.env.TRUSTED_PROXY;
+  resetSsoRateLimitsForTests();
   ensureAuthTables();
   getDb().exec('DELETE FROM sessions; DELETE FROM users; DELETE FROM google_login_requests;');
 });
@@ -78,6 +80,7 @@ after(() => {
 async function withJwks<T>(
   keys: JWK[],
   run: (issuer: string, requestCount: () => number) => Promise<T>,
+  status = 200,
 ): Promise<T> {
   let requests = 0;
   issuerNumber += 1;
@@ -86,7 +89,7 @@ async function withJwks<T>(
   globalThis.fetch = async (input) => {
     assert.equal(String(input), `${issuer}/.well-known/jwks.json`);
     requests += 1;
-    return Response.json({ keys });
+    return Response.json({ keys }, { status });
   };
   try {
     return await run(issuer, () => requests);
@@ -154,6 +157,40 @@ function request(url: string, init: RequestInit = {}): Request {
   return new Request(url, { ...init, headers });
 }
 
+function assertSecurityHeaders(response: Response): void {
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+}
+
+async function captureConsole(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const originals = {
+    error: console.error,
+    info: console.info,
+    log: console.log,
+    warn: console.warn,
+  };
+  const capture = (...values: unknown[]) => lines.push(values.map(String).join(' '));
+  console.error = capture;
+  console.info = capture;
+  console.log = capture;
+  console.warn = capture;
+  try {
+    await run();
+  } finally {
+    console.error = originals.error;
+    console.info = originals.info;
+    console.log = originals.log;
+    console.warn = originals.warn;
+  }
+  return lines;
+}
+
+function assertNoTokenOrSubject(lines: string[], token: string, sub: string): void {
+  assert.equal(lines.some((line) => line.includes(token)), false);
+  assert.equal(lines.some((line) => line.includes(sub)), false);
+}
+
 test('1. valid token returns 200, sets a session cookie, and upserts a tenant user', async () => {
   await withJwks([trustedJwk], async (issuer) => {
     configureIssuer(issuer);
@@ -164,6 +201,7 @@ test('1. valid token returns 200, sets a session cookie, and upserts a tenant us
     }));
 
     assert.equal(response.status, 200);
+    assertSecurityHeaders(response);
     assert.deepEqual(await response.json(), { ok: true });
     const setCookie = response.headers.get('set-cookie') ?? '';
     assert.match(setCookie, /^hermes-session=/);
@@ -195,6 +233,7 @@ test('2. expired and not-yet-valid tokens return 401', async () => {
         headers: { authorization: `Bearer ${token}` },
       }));
       assert.equal(response.status, 401);
+      assertSecurityHeaders(response);
       assert.deepEqual(await response.json(), { error: 'invalid_sso_token' });
     }
   });
@@ -224,6 +263,29 @@ test('4. wrong audience is rejected when an audience is configured', async () =>
   });
 });
 
+test('4b. enabled SSO rejects every token when audience is unset or empty', async () => {
+  await withJwks([trustedJwk], async (issuer) => {
+    configureIssuer(issuer);
+    const token = await signedToken(issuer);
+
+    for (const audience of [undefined, '']) {
+      if (audience === undefined) delete process.env.STAGESNAP_SSO_AUDIENCE;
+      else process.env.STAGESNAP_SSO_AUDIENCE = audience;
+      await assert.rejects(() => verifyStagesnapToken(token), /^Error: Invalid StageSnap SSO token$/);
+    }
+  });
+});
+
+test('5b. subjects with slashes, whitespace, or excessive length are rejected', async () => {
+  await withJwks([trustedJwk], async (issuer) => {
+    configureIssuer(issuer);
+    for (const sub of ['tenant/user', 'tenant user', 'x'.repeat(500)]) {
+      const token = await signedToken(issuer, { sub });
+      await assert.rejects(() => verifyStagesnapToken(token), /^Error: Invalid StageSnap SSO token$/);
+    }
+  });
+});
+
 test('5. alg:none and HS256 signed with the RSA modulus are rejected', async () => {
   await withJwks([trustedJwk], async (issuer) => {
     configureIssuer(issuer);
@@ -241,8 +303,12 @@ test('5. alg:none and HS256 signed with the RSA modulus are rejected', async () 
 test('6. signature by an unrelated key is rejected', async () => {
   await withJwks([trustedJwk], async (issuer) => {
     configureIssuer(issuer);
-    const token = await signedToken(issuer, { key: unrelatedPrivateKey });
-    await assert.rejects(() => verifyStagesnapToken(token), /^Error: Invalid StageSnap SSO token$/);
+    const sub = 'private-signature-subject';
+    const token = await signedToken(issuer, { key: unrelatedPrivateKey, sub });
+    const lines = await captureConsole(async () => {
+      await assert.rejects(() => verifyStagesnapToken(token), /^Error: Invalid StageSnap SSO token$/);
+    });
+    assertNoTokenOrSubject(lines, token, sub);
   });
 });
 
@@ -259,9 +325,11 @@ test('8. unset feature flag returns 404', async () => {
   delete process.env.STAGESNAP_SSO_ENABLED;
   const response = await GET(request('http://dashboard.test/api/auth/sso'));
   assert.equal(response.status, 404);
+  assertSecurityHeaders(response);
 });
 
-test('9. rate limiter rejects the eleventh request from one forwarded IP', async () => {
+test('9. rate limiter rejects the eleventh request from one trusted forwarded IP', async () => {
+  process.env.TRUSTED_PROXY = 'true';
   const headers = { 'x-forwarded-for': '198.51.100.10' };
   for (let attempt = 1; attempt <= 10; attempt += 1) {
     const response = await POST(new Request('http://dashboard.test/api/auth/sso', {
@@ -275,39 +343,79 @@ test('9. rate limiter rejects the eleventh request from one forwarded IP', async
     headers,
   }));
   assert.equal(limited.status, 429);
+  assertSecurityHeaders(limited);
   assert.deepEqual(await limited.json(), { error: 'rate_limited' });
+});
+
+test('9b. spoofed forwarded IP rotation is ignored when TRUSTED_PROXY is unset', async () => {
+  let limited = false;
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    const response = await POST(new Request('http://dashboard.test/api/auth/sso', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': `198.51.100.${attempt}` },
+    }));
+    if (response.status === 429) limited = true;
+  }
+  assert.equal(limited, true);
+});
+
+test('9c. global rate limit rejects rotation across trusted per-IP buckets', async () => {
+  process.env.TRUSTED_PROXY = 'true';
+  let limited = false;
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    const response = await POST(new Request('http://dashboard.test/api/auth/sso', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': `203.0.113.${attempt}` },
+    }));
+    if (response.status === 429) limited = true;
+  }
+  assert.equal(limited, true);
 });
 
 test('10. failures do not log the token or subject', async () => {
   const issuer = 'https://untrusted.stagesnap.invalid';
   configureIssuer('https://trusted.stagesnap.invalid');
-  const token = await signedToken(issuer, { sub: 'private-subject-value' });
-  const lines: string[] = [];
-  const originals = {
-    error: console.error,
-    info: console.info,
-    log: console.log,
-    warn: console.warn,
-  };
-  const capture = (...values: unknown[]) => lines.push(values.map(String).join(' '));
-  console.error = capture;
-  console.info = capture;
-  console.log = capture;
-  console.warn = capture;
-  try {
+  const sub = 'private-subject-value';
+  const token = await signedToken(issuer, { sub });
+  const lines = await captureConsole(async () => {
     const response = await POST(request('http://dashboard.test/api/auth/sso', {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
     }));
     assert.equal(response.status, 401);
-  } finally {
-    console.error = originals.error;
-    console.info = originals.info;
-    console.log = originals.log;
-    console.warn = originals.warn;
-  }
-  assert.equal(lines.some((line) => line.includes(token)), false);
-  assert.equal(lines.some((line) => line.includes('private-subject-value')), false);
+  });
+  assertNoTokenOrSubject(lines, token, sub);
+
+  await withJwks([], async (failingIssuer) => {
+    configureIssuer(failingIssuer);
+    const fetchSub = 'private-jwks-fetch-subject';
+    const fetchToken = await signedToken(failingIssuer, { sub: fetchSub });
+    const fetchLines = await captureConsole(async () => {
+      await assert.rejects(
+        () => verifyStagesnapToken(fetchToken),
+        /^Error: Invalid StageSnap SSO token$/,
+      );
+    });
+    assertNoTokenOrSubject(fetchLines, fetchToken, fetchSub);
+  }, 503);
+
+  await withJwks([trustedJwk], async (collisionIssuer) => {
+    configureIssuer(collisionIssuer);
+    const collisionSub = 'private-upsert-subject';
+    const collisionToken = await signedToken(collisionIssuer, { sub: collisionSub });
+    getDb().prepare(
+      "INSERT INTO users (username, password_hash, role, auth_provider) VALUES (?, ?, 'viewer', 'local')",
+    ).run(`stagesnap:${collisionSub}`, 'existing-password-hash');
+    const collisionLines = await captureConsole(async () => {
+      const response = await POST(request('http://dashboard.test/api/auth/sso', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${collisionToken}` },
+      }));
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), { error: 'invalid_sso_token' });
+    });
+    assertNoTokenOrSubject(collisionLines, collisionToken, collisionSub);
+  });
 });
 
 test('tenant sessions remain tenant and have no admin, editor, or dashboard-read privileges', async () => {
@@ -340,7 +448,7 @@ test('tenant sessions remain tenant and have no admin, editor, or dashboard-read
   );
 });
 
-test('token source precedence is Authorization, query, then StageSnap cookies', async () => {
+test('token source precedence is Authorization, POST body, then StageSnap cookies', async () => {
   await withJwks([trustedJwk], async (issuer, requestCount) => {
     configureIssuer(issuer);
     const valid = await signedToken(issuer);
@@ -358,14 +466,29 @@ test('token source precedence is Authorization, query, then StageSnap cookies', 
     ));
     assert.equal(headerWins.status, 200);
 
-    const queryWins = await POST(request(
-      `http://dashboard.test/api/auth/sso?token=${encodeURIComponent(valid)}`,
-      {
-        method: 'POST',
-        headers: { cookie: `__Host-__convexAuthJWT=${encodeURIComponent(invalid)}` },
+    const jsonBodyWorks = await POST(request('http://dashboard.test/api/auth/sso', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: `__Host-__convexAuthJWT=${encodeURIComponent(invalid)}`,
       },
-    ));
-    assert.equal(queryWins.status, 200);
+      body: JSON.stringify({ token: valid }),
+    }));
+    assert.equal(jsonBodyWorks.status, 200);
+
+    const formBodyWorks = await POST(request('http://dashboard.test/api/auth/sso', {
+      method: 'POST',
+      body: new URLSearchParams({ token: valid }),
+    }));
+    assert.equal(formBodyWorks.status, 200);
+
+    const multipartBody = new FormData();
+    multipartBody.set('token', valid);
+    const multipartBodyWorks = await POST(request('http://dashboard.test/api/auth/sso', {
+      method: 'POST',
+      body: multipartBody,
+    }));
+    assert.equal(multipartBodyWorks.status, 200);
 
     const cookieWorks = await POST(request('http://dashboard.test/api/auth/sso', {
       method: 'POST',
@@ -373,12 +496,25 @@ test('token source precedence is Authorization, query, then StageSnap cookies', 
     }));
     assert.equal(cookieWorks.status, 200);
 
-    const getHop = await GET(request(
-      `http://dashboard.test/api/auth/sso?token=${encodeURIComponent(valid)}`,
-    ));
+    const getHop = await GET(request('http://dashboard.test/api/auth/sso', {
+      headers: { cookie: `__Host-__convexAuthJWT=${encodeURIComponent(valid)}` },
+    }));
     assert.equal(getHop.status, 307);
     assert.equal(getHop.headers.get('location'), 'http://dashboard.test/');
     assert.match(getHop.headers.get('set-cookie') ?? '', /^hermes-session=/);
     assert.equal(requestCount(), 1);
+  });
+});
+
+test('query-string tokens are ignored', async () => {
+  await withJwks([trustedJwk], async (issuer) => {
+    configureIssuer(issuer);
+    const valid = await signedToken(issuer);
+    const response = await GET(request(
+      `http://dashboard.test/api/auth/sso?token=${encodeURIComponent(valid)}`,
+    ));
+    assert.equal(response.status, 401);
+    assertSecurityHeaders(response);
+    assert.deepEqual(await response.json(), { error: 'invalid_sso_token' });
   });
 });

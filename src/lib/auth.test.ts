@@ -16,6 +16,7 @@ import { getDb, resetDbForTests } from './db';
 import {
   authenticate,
   createSession,
+  createUser,
   destroySession,
   ensureAuthTables,
   getUserFromRequest,
@@ -24,6 +25,7 @@ import {
   requireUser,
   reviewGoogleLoginRequest,
   seedAdmin,
+  upsertStagesnapUser,
   validateSession,
 } from './auth';
 
@@ -122,4 +124,37 @@ test('reviewing login requests clears stale pending error metadata', () => {
   assert.equal(rows[0].status, 'denied');
   assert.equal(rows[0].attempts, 0);
   assert.equal(rows[0].last_error, null);
+});
+
+test('StageSnap upsert rejects a username collision without clobbering the local account', () => {
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO users (username, password_hash, role, auth_provider) VALUES (?, ?, 'admin', 'local')",
+  ).run('stagesnap:abc', 'existing-password-hash');
+
+  assert.throws(() => upsertStagesnapUser('abc'), /^Error: StageSnap username collision$/);
+
+  const row = db
+    .prepare('SELECT role, auth_provider FROM users WHERE username = ?')
+    .get('stagesnap:abc') as { auth_provider: string; role: string };
+  assert.deepEqual(row, { role: 'admin', auth_provider: 'local' });
+});
+
+test('createUser rejects the reserved StageSnap username prefix case-insensitively', () => {
+  for (const username of ['stagesnap:x', 'StageSnap:y']) {
+    assert.throws(
+      () => createUser(username, 'long-enough-password', 'viewer'),
+      /^Error: Username is reserved$/,
+    );
+  }
+});
+
+test('StageSnap upsert preserves the same provider-owned row across repeat logins', () => {
+  const first = upsertStagesnapUser('xyz');
+  const second = upsertStagesnapUser('xyz');
+
+  assert.equal(second.id, first.id);
+  assert.equal(second.username, 'stagesnap:xyz');
+  assert.equal(second.role, 'tenant');
+  assert.equal(second.auth_provider, 'stagesnap');
 });

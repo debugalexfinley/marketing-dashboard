@@ -3,8 +3,10 @@ import { createRemoteJWKSet, decodeJwt, jwtVerify, type RemoteJWKSet } from 'jos
 const DEFAULT_JWKS_TTL_MS = 10 * 60 * 1000;
 const MAX_CLOCK_SKEW_SECONDS = 60;
 const GENERIC_ERROR = 'Invalid StageSnap SSO token';
+const SUBJECT_PATTERN = /^[A-Za-z0-9_:.-]{1,128}$/;
 
 const jwksByIssuer = new Map<string, { ttl: number; jwks: RemoteJWKSet }>();
+let warnedMissingAudience = false;
 
 function configuredIssuers(): string[] {
   return (process.env.STAGESNAP_SSO_ISSUERS ?? '')
@@ -36,21 +38,29 @@ export async function verifyStagesnapToken(token: string): Promise<{ sub: string
   try {
     if (!token) throw new Error(GENERIC_ERROR);
 
+    const audience = process.env.STAGESNAP_SSO_AUDIENCE?.trim();
+    if (process.env.STAGESNAP_SSO_ENABLED === 'true' && !audience) {
+      if (!warnedMissingAudience) {
+        console.warn('StageSnap SSO is enabled without STAGESNAP_SSO_AUDIENCE; token verification is disabled');
+        warnedMissingAudience = true;
+      }
+      throw new Error(GENERIC_ERROR);
+    }
+
     const issuers = configuredIssuers();
     const unverifiedIssuer = decodeJwt(token).iss;
     if (typeof unverifiedIssuer !== 'string' || !issuers.includes(unverifiedIssuer)) {
       throw new Error(GENERIC_ERROR);
     }
 
-    const audience = process.env.STAGESNAP_SSO_AUDIENCE?.trim();
     const { payload } = await jwtVerify(token, getJwks(unverifiedIssuer), {
       algorithms: ['RS256'],
       issuer: issuers,
-      audience: audience || undefined,
+      audience,
       clockTolerance: MAX_CLOCK_SKEW_SECONDS,
       requiredClaims: ['iss', 'sub', 'exp'],
     });
-    if (typeof payload.sub !== 'string' || !payload.sub) {
+    if (typeof payload.sub !== 'string' || !SUBJECT_PATTERN.test(payload.sub)) {
       throw new Error(GENERIC_ERROR);
     }
     return { sub: payload.sub };

@@ -4,11 +4,24 @@ import { roleHasCapability, type Capability } from '@/lib/rbac';
 
 export function requireApiUser(request: Request): NextResponse | null {
   try {
-    requireUser(request);
+    const user = requireUser(request);
+    if (user.role === 'tenant') {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    }
     return null;
   } catch {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
+}
+
+export function requireApiTenant(request: Request): NextResponse | null {
+  try {
+    const user = requireUser(request);
+    if (user.role === 'tenant') return null;
+  } catch {
+    // Tenant routes fail closed with the same response as other non-tenant callers.
+  }
+  return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 }
 
 export function requireApiAdmin(request: Request): NextResponse | null {

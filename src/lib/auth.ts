@@ -212,6 +212,9 @@ export function createUser(username: string, password: string, role: UserRoleInp
   if (!normalized || normalized.length < 3) {
     throw new Error('Username must be at least 3 characters');
   }
+  if (/^stagesnap:/i.test(normalized)) {
+    throw new Error('Username is reserved');
+  }
   if (!password || password.length < 10) {
     throw new Error('Password must be at least 10 characters');
   }
@@ -347,6 +350,12 @@ export function upsertStagesnapUser(sub: string): User {
 
   const db = getDb();
   const username = `stagesnap:${sub}`;
+  const existing = db
+    .prepare('SELECT auth_provider FROM users WHERE username = ?')
+    .get(username) as { auth_provider?: string | null } | undefined;
+  if (existing && existing.auth_provider !== 'stagesnap') {
+    throw new Error('StageSnap username collision');
+  }
   const pseudoPassword = randomBytes(24).toString('hex');
   db.prepare(
     `INSERT INTO users (username, password_hash, role, auth_provider)
