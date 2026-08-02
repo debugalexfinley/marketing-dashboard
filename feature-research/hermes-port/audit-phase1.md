@@ -4,6 +4,8 @@ Branch: `hermes-port-phase1` (off `main` @ `96700db`)
 Implementer: Codex (gpt-5.5, `codex exec`, workspace-write) across 4 calls, driven by a Sonnet-5 wrapper (this orchestrator). No fallback model needed.
 Final commit: `bc1368c`
 
+**Superseded by the fix pass below (commit `0617446`) — see that section for the current state of the four blocking/hygiene findings from the dual review.**
+
 ## Files changed (complete list, `git diff --name-status 96700db..HEAD`)
 
 New:
@@ -150,3 +152,88 @@ d727d5a wip: hermes-port phase1 step3 - refactor batch 1 routes to AgentBackend
 7c016bc wip: hermes-port phase1 step4 - refactor batch 2 routes to AgentBackend
 bc1368c wip: hermes-port phase1 step4 fix - drop non-original instance param handling
 ```
+
+---
+
+## Fix pass — reconciled dual-review findings (F1–F8)
+
+Spec: `feature-research/hermes-port/spec-phase1-fixes.md` (Codex + Grok blind reviews of the phase 1 audit above, reconciled into 8 findings). Base: `7e544dc` (phase 1 final). Implementer: Codex (gpt-5.5, `codex exec`, workspace-write) across 3 sequential calls (F1+F7 → F2+F3+F4 → F5+F6+F8), driven by this Sonnet-5 orchestrator, plus a 4th orchestrator-only pass running all five spec acceptance checks and the fail-before spot-verification. No fallback model needed.
+
+**Commit:** `0617446` (on `hermes-port-phase1`, parent `7e544dc`)
+
+### Files changed (`git diff --name-status 7e544dc..0617446`)
+
+Modified:
+- `src/lib/backend/openclaw.ts` — the bulk of the fix: split `configuredAgentList`, restored error semantics on 4 methods, added `readCronJobsTolerant()`, fixed `readModelRouting()` alias-miss precedence, added write guards to the 3 workspace mutation methods, threaded `sessionId` through `sendOrchestratorMessage`.
+- `src/lib/backend/types.ts` — added `readCronJobsTolerant()` to the `AgentBackend` interface, added `'File too large'` to `WorkspaceMutationResult`, added `sessionId?: string` to `sendOrchestratorMessage()`, added a `CommandResult` docblock note (F6.2).
+- `src/lib/backend/openclaw.test.ts` — +291 lines: new tests for every fix below.
+- `src/lib/agent-config.ts` — deprecation-comment fix only (F7), no code change.
+- `src/app/api/hud/route.ts` — 1-line change: `backend.listCronJobs()` → `backend.readCronJobsTolerant()` (F2). **The only route touched by this fix pass** — every other route is byte-identical to `7e544dc` (`git diff 7e544dc -- src/app/api/` confirms a single-file, single-line diff).
+- `feature-research/hermes-port/golden/capture.mjs` — added `--check` mode (fresh capture into a temp dir, byte-diff against `golden/baseline/*.json`, nonzero exit on any mismatch, first-difference reporting, guaranteed temp cleanup).
+- `package.json` — added `"golden:check": "node feature-research/hermes-port/golden/capture.mjs --check"`, no other script/field touched.
+
+New:
+- `feature-research/hermes-port/fixtures/openclaw-home-arrayform/openclaw.json` + `workspace-hermes/README.md` — top-level `agents: [...]` fixture proving the F1 divergence (agent-config path sees none of it; workspace-roots path does).
+- `feature-research/hermes-port/fixtures/openclaw-home-arrayform/null-entry/openclaw.json` — `agents.list` containing a `null` element, proving the restored `!entry` guard.
+- `feature-research/hermes-port/fixtures/openclaw-home-hud-tolerant/cron/jobs.json` — malformed cron entries (missing id, bare string element) proving F2's tolerant HUD counting.
+- `feature-research/hermes-port/fixtures/openclaw-home-cron-non-array/cron/jobs.json` — `{"jobs": "abc"}`, a non-array `jobs` value, proving F3.4 (`readCronNotificationJobs` never throws a TypeError).
+- `feature-research/hermes-port/fixtures/openclaw-home-model-alias/openclaw.json` — an agent entry with a raw id that's an `AGENT_ID_ALIASES` alias plus a distinct `defaults.model`, proving F4's alias-miss-falls-to-defaults precedence.
+- `feature-research/hermes-port/fixtures/openclaw-home/bin/golden-deploy-marker` — the fixture binary `capture.mjs` already referenced via `HERMES_DEPLOY_SCRIPT_PATH` but that didn't exist on disk.
+
+### Finding → fix mapping
+
+| Finding | Fix | Evidence |
+|---|---|---|
+| **F1** — `configuredAgentList()` conflated the agent-config (strict `.list`-only) and workspace-roots (tolerant top-level-or-`.list`) pre-refactor readings into one function; dropped the `!entry` null guard | Split into `configuredAgentListStrict()` (feeds `getOpenClawAgents()`/`readModelRouting()`) and `configuredAgentListWithTopLevel()` (feeds `readWorkspaceAgentList()`); restored `!entry` guards on both the strict-path loop and `readWorkspaceAgentList`'s loop | 3 new tests: `listConfiguredAgents ignores the top-level agents array form`, `listWorkspaceRoots accepts the top-level agents array form`, `listConfiguredAgents skips null entries in agents.list`. **Fail-before spot-verified**: all 3 confirmed failing against `7e544dc` in an isolated `git worktree` (see Verification below) — the array-form test returned the fixture's agent instead of `[]`, and the null-entry test threw `TypeError: Cannot read properties of null (reading 'id')`. |
+| **F2** — HUD's cron counting went through `listCronJobs()`/`normalizeCronJobRecord()` (strict, id-validating) instead of the pre-refactor route's own raw tolerant parse | Added `readCronJobsTolerant()` to `OpenClawBackend`/`AgentBackend` — reads `cron/jobs.json` directly, accepts top-level array or `{jobs:[...]}`, no id normalization; `hud/route.ts` now calls it instead of `listCronJobs()` | Test: `readCronJobsTolerant counts malformed entries from a top-level array` against the new `openclaw-home-hud-tolerant` fixture. |
+| **F3** (4 sub-findings) — error semantics drifted on `readCronRuns`, `readSessions`, `readAuditLog`, `readCronNotificationJobs` | `readCronRuns()` now swallows non-ENOENT run-file errors to `[]` (old automations behavior) while `readCronRunsInfo()` keeps its stricter `exists`/throw contract for other callers (e.g. `/api/cron/runs`); `readSessions()` now only swallows ENOENT on the `readdir` call itself, letting other errors (e.g. EACCES) propagate; `readAuditLog()` only swallows ENOENT on the file read, other errors propagate; `readCronNotificationJobs()` no longer throws `TypeError` for a non-array `jobs` value — returns `parsed.jobs \|\| []` as-is | 4 new tests: `readCronRuns swallows non-ENOENT run-file read errors`, `readSessions propagates session-directory enumeration errors`, `readAuditLog returns empty for missing files and propagates other read errors`, `readCronNotificationJobs accepts a non-array jobs value without throwing`. **Fail-before spot-verified**: `readSessions propagates session-directory enumeration errors` confirmed failing against `7e544dc` (old code silently returned `[]` instead of rejecting with `EACCES`). |
+| **F4** — `/api/agents` model-routing: an aliased raw config id that misses the normalized-id lookup should fall back to `config.agents.defaults.model`, not to the agent's own already-resolved `model` field | `readModelRouting()` now does a second pass: for every normalized id not already present as a raw-id key in the routing map, it explicitly sets `routing[normalizedId] = defaultsModel` — reproducing the pre-refactor `list.find(a => a.id === agentId)` miss-on-alias precedence bug-for-bug | Test: `readModelRouting uses defaults for a normalized alias miss` against the new `openclaw-home-model-alias` fixture — asserts the effective routing is `defaults.model`, not the aliased entry's own distinct model. |
+| **F5** — workspace write methods relied entirely on the route for the write-allowed guard, path allowlist, and size cap | `createWorkspaceFile`/`updateWorkspaceFile`/`deleteWorkspaceFile` now call `assertWorkspaceWriteAllowed()` and `isAllowedWorkspaceWritePath()` internally (all three); create/update additionally enforce `WORKSPACE_MAX_FILE_BYTES`, returning a new `'File too large'` `WorkspaceMutationResult` variant that the route already mapped to 413 | Tests: `workspace mutation methods directly enforce the disabled guard`, `workspace mutations reject disallowed and traversal paths without filesystem changes`, `workspace create, update, and delete enforce size caps and write safely end to end`, `workspace route keeps its existing disabled, path, and size responses` (asserts the route's own status-code mapping literals are unchanged, so backend-level guards don't alter observable route behavior). |
+| **F6** — `sendOrchestratorMessage` interface signature dropped the optional `sessionId`; `CommandResult`'s relationship to the old ad-hoc response shape was undocumented | Restored `sessionId?: string` on both the `AgentBackend` interface method and `OpenClawBackend`'s implementation (now forwards to the underlying free function); added a docblock note on `CommandResult` | No caller currently passes a `sessionId` here (grepped `src/app` — none do), so this is additive/non-breaking; covered by typecheck passing with the new optional param. |
+| **F7** — `agent-config.ts` deprecation comments pointed at `listAgents()` (merges filesystem discovery — different semantics) instead of `listConfiguredAgents()` (the true no-change equivalent) | Comment-only fix on all 3 re-exported functions (`getAgents`/`getAgentIds`/`getAgent`) | No behavior change; verified by inspection. |
+| **F8** | Test-net hardening — see "Files changed" above for the 4 new fixtures and `capture.mjs --check`; write-path tests (`writeCronJobs through the backend rotates both backup forms`, plus the F5 workspace write-path tests) exercise the write flags ENABLED against temp dirs, never the committed fixture tree. | 45/45 `pnpm test` passing (34 pre-existing baseline + 11 new). `golden:check` passing (see below). |
+
+### Acceptance checks (all 5, orchestrator-run — not self-reported)
+
+1. **`pnpm typecheck`** — clean, no errors. Re-run independently by the orchestrator after each Codex call and again after the final commit.
+2. **`pnpm test`** — 45/45 passing:
+   ```
+   ℹ tests 45
+   ℹ pass 45
+   ℹ fail 0
+   ```
+   **Fail-before spot-verification** (required by the spec, done in an isolated `git worktree add /tmp/hermes-spotcheck 7e544dc` with only the fixed test file + new fixtures copied in, run against the *unfixed* `7e544dc` openclaw.ts): 3 tests run — `listConfiguredAgents ignores the top-level agents array form` (F1), `listConfiguredAgents skips null entries in agents.list` (F1), `readSessions propagates session-directory enumeration errors` (F3) — **all 3 failed** as expected:
+   ```
+   ✖ listConfiguredAgents ignores the top-level agents array form
+     AssertionError: expected [] but got [{id:'hermes', name:'Hermes Array Fixture', ...}]
+   ✖ listConfiguredAgents skips null entries in agents.list
+     TypeError: Cannot read properties of null (reading 'id')
+   ✖ readSessions propagates session-directory enumeration errors
+     AssertionError [ERR_ASSERTION]: Missing expected rejection {code: 'EACCES'}
+   ```
+   Worktree removed after verification (`git worktree remove /tmp/hermes-spotcheck --force`).
+3. **`node feature-research/hermes-port/golden/capture.mjs --check`** — exit 0, byte-identical to baseline, run independently by the orchestrator (not just trusting Codex's self-report):
+   ```
+   Golden check passed: 19 JSON files are byte-identical.
+   ```
+   Codex's own build hit one real environment-specific false positive on its first attempt (`api-deploy-status.json` differed because `pgrep -af golden-deploy-marker` matched the Codex CLI's own process command line, which contained that string) — fixed honestly by having `capture.mjs` shadow `pgrep` with a temp stub during capture, without weakening the byte comparator or touching the baseline. Orchestrator re-ran the check fresh afterward and confirmed exit 0 independently.
+4. **Greps** — `fs`/`spawn`/`child_process` and `resolveOpenClawPaths` are zero-hits across every route phase 1 actually touched (agents, cron, cron/jobs, cron/runs, automations, hud, chat/sync-sessions, memory-health, memory-drift, memory-alerts, memory-policy, memory-alert-policy, memory-effect, deploy-status, agents/workspace-roots, agents/workspace, instances, mission-control/chat, chat/messages). The unrelated routes flagged by an unscoped `src/app/api` grep (`lead-quality`, `settings`, `content-item`, `lead-sources`, `lead-sources-trend`, `outreach/pause`, `x-budget`) do local fs I/O with zero connection to OpenClaw/`AgentBackend` and were correctly out of scope for both phase 1 and this fix pass (documented already in the phase-1 audit above).
+5. **`git diff 7e544dc -- src/app/api/`** — confirms `hud/route.ts` is the *only* route touched by this fix pass, a single 1-line diff (the F2 method swap). All other 18 routes are byte-identical to `7e544dc`.
+
+### Deviations from spec
+
+None that changed scope. Two judgment calls, both documented by Codex and confirmed reasonable on review:
+- **F3.1**: `readCronRunsInfo()` itself was left with its stricter `exists`/throw contract (other callers, e.g. `/api/cron/runs`, rely on it); only `readCronRuns()` — the method the automations route actually calls — wraps that call in a broad catch, matching the old `readRecentRuns()` behavior exactly without touching the other caller's semantics.
+- **F3.4**: rather than throwing or genuinely character-iterating a non-array `jobs` value, `readCronNotificationJobs()` now returns `parsed.jobs || []` as-is (matching the old `data.jobs || []` expression's runtime value, not just its outcome), which preserves the old accidental string-iteration behavior for any downstream `for...of` consumer without introducing new logic to explicitly replicate it.
+
+### Verification method (orchestrator, not self-reported by Codex)
+
+Same discipline as the phase 1 audit above: every acceptance check was re-run independently after each Codex call and again after the final commit (`pnpm typecheck`, `pnpm test`, a fresh `golden:check` run, both greps, the `7e544dc`-diff route-scope check, and a `git status --porcelain` reconciliation against the spec's Files-touched list before staging). The fail-before spot-verification was done by the orchestrator in an isolated worktree, not delegated to Codex. Codex's own step reports were used for narrative/rationale only.
+
+### Open risks / deferred (explicitly, per spec)
+
+- `kind: 'hermes'` still throws "phase 2" — unchanged, spec-sanctioned.
+- Memory-policy sanitize ownership moving into the backend — still noted for phase 2, not addressed here.
+- `Promise.all` enrichment in `/api/agents` — still accepted as stable-FS-equivalent.
+- Backend cache stickiness — still accepted until phase 2 introduces live kinds.
+- Full write-path golden coverage (capture.mjs exercising the write endpoints, not just reads) was explicitly deferred per the spec; the write paths are covered at the unit-test level only (F8).
