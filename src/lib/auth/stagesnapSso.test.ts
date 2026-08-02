@@ -17,7 +17,8 @@ const dbPath = path.join(tempDir, 'hermes-test.db');
 process.env.HERMES_DB_PATH = dbPath;
 process.env.AUTH_COOKIE_SECURE = 'false';
 
-import { GET, POST, resetSsoRateLimitsForTests } from '@/app/api/auth/sso/route';
+import { GET, POST } from '@/app/api/auth/sso/route';
+import { resetSsoRateLimitsForTests } from '@/lib/auth/ssoRateLimit';
 import { requireApiAdmin, requireApiCapability, requireApiEditor } from '@/lib/api-auth';
 import {
   createSession,

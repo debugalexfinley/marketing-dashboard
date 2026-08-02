@@ -1,15 +1,11 @@
 import { NextResponse } from 'next/server';
 import { createSession, upsertStagesnapUser } from '@/lib/auth';
 import { verifyStagesnapToken } from '@/lib/auth/stagesnapSso';
+import { allowSsoRequest } from '@/lib/auth/ssoRateLimit';
 
 const SESSION_COOKIE = 'hermes-session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
-const RATE_LIMIT_CAPACITY = 10;
-const GLOBAL_RATE_LIMIT_CAPACITY = 15;
-const RATE_LIMIT_WINDOW_MS = 60_000;
 
-const rateLimits = new Map<string, { tokens: number; updatedAt: number }>();
-let globalRateLimit: { tokens: number; updatedAt: number } | null = null;
 
 function shouldUseSecureCookies(request: Request): boolean {
   const forced = process.env.AUTH_COOKIE_SECURE?.trim().toLowerCase();
@@ -25,51 +21,6 @@ function shouldUseSecureCookies(request: Request): boolean {
   } catch {
     return process.env.NODE_ENV === 'production';
   }
-}
-
-function clientIp(request: Request): string {
-  if (process.env.TRUSTED_PROXY === 'true') {
-    // Safe only behind a trusted proxy that OVERWRITES (not appends to) these headers.
-    const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-    return forwarded || request.headers.get('x-real-ip')?.trim() || 'proxied-unknown';
-  }
-
-  // Standard Route Handler Requests expose no platform connection IP.
-  return 'unproxied';
-}
-
-function takeBucketToken(
-  current: { tokens: number; updatedAt: number } | undefined,
-  capacity: number,
-  now: number,
-): { allowed: boolean; bucket: { tokens: number; updatedAt: number } } {
-  const bucket = current ?? { tokens: capacity, updatedAt: now };
-  const replenished = Math.min(
-    capacity,
-    bucket.tokens + ((now - bucket.updatedAt) * capacity) / RATE_LIMIT_WINDOW_MS,
-  );
-  return {
-    allowed: replenished >= 1,
-    bucket: {
-      tokens: replenished >= 1 ? replenished - 1 : replenished,
-      updatedAt: now,
-    },
-  };
-}
-
-function takeRateLimitToken(request: Request): boolean {
-  const now = Date.now();
-  const key = clientIp(request);
-  const perKey = takeBucketToken(rateLimits.get(key), RATE_LIMIT_CAPACITY, now);
-  const global = takeBucketToken(globalRateLimit ?? undefined, GLOBAL_RATE_LIMIT_CAPACITY, now);
-  rateLimits.set(key, perKey.bucket);
-  globalRateLimit = global.bucket;
-  return perKey.allowed && global.allowed;
-}
-
-export function resetSsoRateLimitsForTests(): void {
-  rateLimits.clear();
-  globalRateLimit = null;
 }
 
 function cookieValue(request: Request, name: string): string | null {
@@ -127,7 +78,7 @@ function invalidResponse(): NextResponse {
 
 async function authenticate(request: Request, redirect: boolean): Promise<NextResponse> {
   if (process.env.STAGESNAP_SSO_ENABLED !== 'true') return disabledResponse();
-  if (!takeRateLimitToken(request)) {
+  if (!allowSsoRequest(request)) {
     return withSecurityHeaders(NextResponse.json({ error: 'rate_limited' }, { status: 429 }));
   }
 
