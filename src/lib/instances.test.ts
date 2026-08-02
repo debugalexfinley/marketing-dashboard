@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, beforeEach, test } from 'node:test';
 
-import { getInstances, getTenantInstance } from './instances';
+import { findAliasedIds, getInstance, getInstances, getTenantInstance } from './instances';
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-instances-'));
 const envKeys = [
@@ -61,6 +61,25 @@ test('discovers a valid tenant directory containing config.yaml', () => {
     homeDir,
     kind: 'hermes',
   });
+});
+
+test('does not discover a tenant whose config.yaml is a symlink', () => {
+  const target = makeTenant('config-target');
+  const linkedHome = path.join(tenantsRoot, 'linked-config');
+  fs.mkdirSync(linkedHome);
+  fs.symlinkSync(
+    path.join(target, 'config.yaml'),
+    path.join(linkedHome, 'config.yaml'),
+    'file',
+  );
+  assert.equal(ids().includes('stagesnap:linked-config'), false);
+});
+
+test('does not discover a tenant whose config.yaml is empty', () => {
+  const homeDir = path.join(tenantsRoot, 'empty-config');
+  fs.mkdirSync(homeDir);
+  fs.writeFileSync(path.join(homeDir, 'config.yaml'), '', 'utf8');
+  assert.equal(ids().includes('stagesnap:empty-config'), false);
 });
 
 test('does not discover a directory without config.yaml', () => {
@@ -120,6 +139,38 @@ test('an unset tenants root preserves env-configured instance behavior exactly',
       cronUser: 'openclaw',
     },
   ]);
+});
+
+test('configured instance remains the default ahead of alphabetically earlier tenants', () => {
+  makeTenant('aaa');
+  makeTenant('aab');
+  process.env.HERMES_OPENCLAW_INSTANCES = JSON.stringify([
+    {
+      id: 'configured-default',
+      label: 'Configured Default',
+      openclawHome: '/tmp/configured-default',
+    },
+  ]);
+
+  assert.equal(getInstance().id, 'configured-default');
+});
+
+test('discovered tenant ids use case-sensitive exact matching', () => {
+  makeTenant('Bob');
+  assert.equal(getInstance('stagesnap:Bob').id, 'stagesnap:Bob');
+  assert.notEqual(getInstance('stagesnap:bob').id, 'stagesnap:Bob');
+});
+
+test('findAliasedIds flags every shared identity and leaves unique identities alone', () => {
+  assert.deepEqual(
+    findAliasedIds([
+      { id: 'stagesnap:one', dev: 10, ino: 20 },
+      { id: 'stagesnap:two', dev: 10, ino: 20 },
+      { id: 'stagesnap:unique', dev: 10, ino: 21 },
+    ]),
+    new Set(['stagesnap:one', 'stagesnap:two']),
+  );
+  assert.deepEqual(findAliasedIds([{ id: 'stagesnap:single', dev: 10, ino: 20 }]), new Set());
 });
 
 test('missing and non-directory tenant roots contribute no instances without throwing', () => {
@@ -183,6 +234,17 @@ test('tenant discovery cache reuses a scan within TTL and refreshes after expiry
   } finally {
     fs.readdirSync = originalReaddirSync;
   }
+});
+
+test('getInstances returns fresh instance objects on every call', () => {
+  makeTenant('immutable-cache');
+  const first = getInstances().find((instance) => instance.id === 'stagesnap:immutable-cache');
+  assert.ok(first);
+  first.label = 'mutated';
+
+  const second = getInstances().find((instance) => instance.id === 'stagesnap:immutable-cache');
+  assert.equal(second?.label, 'immutable-cache');
+  assert.notEqual(second, first);
 });
 
 test('discovered tenants retain strict getTenantInstance isolation validation', () => {

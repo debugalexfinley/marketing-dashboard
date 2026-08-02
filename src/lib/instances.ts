@@ -20,7 +20,13 @@ const TENANT_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
 
 type TenantScanCacheEntry = {
   scannedAt: number;
-  instances: HermesInstance[];
+  entries: TenantScanEntry[];
+};
+
+type TenantScanEntry = {
+  instance: HermesInstance;
+  dev: number;
+  ino: number;
 };
 
 const tenantScanCache = new Map<string, TenantScanCacheEntry>();
@@ -100,7 +106,26 @@ function getTenantsScanTtlMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TENANTS_SCAN_TTL_MS;
 }
 
-function scanTenantInstances(root: string): HermesInstance[] {
+export function findAliasedIds(
+  entries: Array<{ id: string; dev: number; ino: number }>,
+): Set<string> {
+  const idsByIdentity = new Map<string, string[]>();
+  for (const entry of entries) {
+    const key = `${entry.dev}:${entry.ino}`;
+    const ids = idsByIdentity.get(key) ?? [];
+    ids.push(entry.id);
+    idsByIdentity.set(key, ids);
+  }
+
+  const aliasedIds = new Set<string>();
+  for (const ids of idsByIdentity.values()) {
+    if (ids.length < 2) continue;
+    for (const id of ids) aliasedIds.add(id);
+  }
+  return aliasedIds;
+}
+
+function scanTenantInstances(root: string): TenantScanEntry[] {
   let names: string[];
   try {
     names = fs.readdirSync(root);
@@ -108,47 +133,78 @@ function scanTenantInstances(root: string): HermesInstance[] {
     return [];
   }
 
-  const instances: HermesInstance[] = [];
+  const entries: TenantScanEntry[] = [];
   for (const name of names) {
     if (name.startsWith('.') || !TENANT_NAME_PATTERN.test(name)) continue;
 
     const homeDir = path.join(root, name);
+    let homeStats: fs.Stats;
     try {
       if (lstatSync(homeDir).isSymbolicLink()) continue;
-      if (!statSync(homeDir).isDirectory()) continue;
+      homeStats = fs.statSync(homeDir);
+      if (!homeStats.isDirectory()) continue;
 
       const configPath = path.join(homeDir, 'config.yaml');
-      if (!statSync(configPath).isFile()) continue;
+      const configStats = lstatSync(configPath);
+      if (!configStats.isFile() || configStats.size <= 0) continue;
       accessSync(configPath, constants.R_OK);
     } catch {
       continue;
     }
 
-    instances.push({
-      id: `stagesnap:${name}`,
-      label: name,
-      openclawHome: '',
-      homeDir,
-      kind: 'hermes',
+    entries.push({
+      instance: {
+        id: `stagesnap:${name}`,
+        label: name,
+        openclawHome: '',
+        homeDir,
+        kind: 'hermes',
+      },
+      dev: homeStats.dev,
+      ino: homeStats.ino,
     });
   }
-  return instances;
+
+  const aliasedIds = findAliasedIds(
+    entries.map(({ instance, dev, ino }) => ({ id: instance.id, dev, ino })),
+  );
+  if (aliasedIds.size > 0) {
+    console.warn(
+      `Aliased tenant homes detected; discarding conflicting instances: ${[...aliasedIds].join(', ')}`,
+    );
+  }
+  return entries.filter((entry) => !aliasedIds.has(entry.instance.id));
 }
 
-function getDiscoveredTenantInstances(): HermesInstance[] {
+function getDiscoveredTenantInstances(configured: HermesInstance[]): HermesInstance[] {
   const configuredRoot = process.env.HERMES_TENANTS_ROOT?.trim();
   if (!configuredRoot) return [];
 
   const root = path.resolve(expandHome(configuredRoot));
   const now = Date.now();
   const cached = tenantScanCache.get(root);
+  let entries: TenantScanEntry[];
   if (cached && now - cached.scannedAt < getTenantsScanTtlMs()) {
-    return cached.instances;
+    entries = cached.entries;
+  } else {
+    entries = scanTenantInstances(root);
+    tenantScanCache.set(root, { scannedAt: now, entries });
   }
 
-  const instances = scanTenantInstances(root);
-  tenantScanCache.set(root, { scannedAt: now, instances });
-  return instances;
+  const configuredHomeIdentities = new Set<string>();
+  for (const instance of configured) {
+    if (instance.kind !== 'hermes' || !instance.homeDir) continue;
+    try {
+      const stats = fs.statSync(instance.homeDir);
+      configuredHomeIdentities.add(`${stats.dev}:${stats.ino}`);
+    } catch {
+      continue;
+    }
+  }
+
+  return entries
+    .filter((entry) => !configuredHomeIdentities.has(`${entry.dev}:${entry.ino}`))
+    .map((entry) => entry.instance);
 }
 
 export function getDefaultInstanceId(): string {
@@ -176,7 +232,7 @@ export function getInstances(): HermesInstance[] {
     ];
   })();
 
-  const discovered = getDiscoveredTenantInstances();
+  const discovered = getDiscoveredTenantInstances(configured);
   const configuredIds = new Set(configured.map((instance) => instance.id));
   const warnedIds = new Set<string>();
   for (const instance of discovered) {
@@ -187,9 +243,9 @@ export function getInstances(): HermesInstance[] {
   }
 
   return [
-    ...discovered.filter((instance) => !configuredIds.has(instance.id)),
     ...configured,
-  ];
+    ...discovered.filter((instance) => !configuredIds.has(instance.id)),
+  ].map((instance) => ({ ...instance }));
 }
 
 export function getInstance(id?: string | null): HermesInstance {
