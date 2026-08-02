@@ -11,7 +11,7 @@
     "lint": "eslint",
     "seed": "tsx scripts/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 src/lib/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 \"src/lib/**/*.test.ts\"",
     "test:e2e": "pnpm build && playwright test",
     "prepare:standalone": "bash scripts/prepare-standalone.sh",
     "build:standalone": "pnpm build && pnpm run prepare:standalone",
