@@ -1,0 +1,265 @@
+#!/usr/bin/env node
+// Test contract: set HERMES_HOME to the fixture home and optionally HERMES_STUB_LOG to a JSONL invocation log; --home is the fallback when HERMES_HOME is unset.
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const FIXED_UPDATED_AT_MS = 1_785_625_200_000;
+const rawArgv = process.argv.slice(2);
+
+if (!process.stdin.isTTY) {
+  process.stdin.on('data', () => {});
+  process.stdin.resume();
+  process.stdin.unref?.();
+}
+
+function extractHomeFlag(argv) {
+  const args = [...argv];
+  const index = args.indexOf('--home');
+  if (index === -1) return { args, homeFlag: null };
+  const homeFlag = args[index + 1];
+  if (!homeFlag) throw new Error('--home requires a directory');
+  args.splice(index, 2);
+  return { args, homeFlag };
+}
+
+function appendInvocationLog(logPath, home) {
+  if (!logPath) return;
+  fs.mkdirSync(path.dirname(path.resolve(logPath)), { recursive: true });
+  fs.appendFileSync(
+    path.resolve(logPath),
+    `${JSON.stringify({ argv: rawArgv, home })}\n`,
+    'utf8',
+  );
+}
+
+function readJobs(home) {
+  const jobsPath = path.join(home, 'cron', 'jobs.json');
+  if (!fs.existsSync(jobsPath)) {
+    return { jobsPath, document: { jobs: [], updated_at: FIXED_UPDATED_AT_MS } };
+  }
+  const parsed = JSON.parse(fs.readFileSync(jobsPath, 'utf8'));
+  return {
+    jobsPath,
+    document: {
+      ...parsed,
+      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+    },
+  };
+}
+
+function writeJobs(jobsPath, document) {
+  fs.mkdirSync(path.dirname(jobsPath), { recursive: true });
+  const current = Number(document.updated_at);
+  const updated_at = Number.isFinite(current) ? current + 1 : FIXED_UPDATED_AT_MS;
+  fs.writeFileSync(
+    jobsPath,
+    `${JSON.stringify({ ...document, updated_at }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+function parseFlags(args) {
+  const flags = new Map();
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith('--')) continue;
+    const next = args[index + 1];
+    if (next !== undefined && !next.startsWith('--')) {
+      flags.set(arg, next);
+      index += 1;
+    } else {
+      flags.set(arg, true);
+    }
+  }
+  return flags;
+}
+
+function parseSchedule(value) {
+  const schedule = String(value ?? '').trim();
+  const interval = schedule.match(/^(?:every\s+)?(\d+)m$/i);
+  if (interval) {
+    const minutes = Number(interval[1]);
+    return { kind: 'interval', minutes, display: `every ${minutes}m` };
+  }
+  return { kind: 'cron', expr: schedule, display: schedule };
+}
+
+function uniqueJobId(document, seed) {
+  const used = new Set(document.jobs.map((job) => job?.id));
+  let nonce = 0;
+  while (true) {
+    const id = crypto.createHash('sha256').update(`${seed}:${nonce}`).digest('hex').slice(0, 12);
+    if (!used.has(id)) return id;
+    nonce += 1;
+  }
+}
+
+function requireJob(document, jobId) {
+  const job = document.jobs.find((candidate) => candidate?.id === jobId);
+  if (!job) {
+    console.error(`Hermes stub: cron job not found: ${jobId}`);
+    process.exitCode = 1;
+    return null;
+  }
+  return job;
+}
+
+function runOneShot(args) {
+  const usageIndex = args.indexOf('--usage-file');
+  const usagePath = usageIndex === -1 ? null : args[usageIndex + 1];
+  if (!usagePath) throw new Error('Hermes stub oneshot requires --usage-file <path>');
+  fs.mkdirSync(path.dirname(path.resolve(usagePath)), { recursive: true });
+  fs.writeFileSync(
+    path.resolve(usagePath),
+    `${JSON.stringify({
+      estimated_cost_usd: 0.0042,
+      cost_status: 'estimated',
+      cost_source: 'stub-pricing',
+      input_tokens: 120,
+      output_tokens: 48,
+      cache_read_tokens: 32,
+      cache_write_tokens: 0,
+      reasoning_tokens: 11,
+      total_tokens: 211,
+      api_calls: 1,
+      model: 'grok-4.5',
+      provider: 'xai-oauth',
+      session_id: 'stub_oneshot_session_0001',
+      completed: true,
+      failed: false,
+      service_tier: 'fixture',
+    }, null, 2)}\n`,
+    'utf8',
+  );
+  console.log('This is a canned Hermes stub reply.');
+}
+
+function runDoctor() {
+  console.log('◆ Hermes fixture diagnostics');
+  console.log('✓ Configuration file is valid');
+  console.log('⚠ Fixture provider credentials are intentionally synthetic');
+  console.log('✗ Optional live delivery check is unavailable in the stub');
+}
+
+function runCronCreate(home, args) {
+  const scheduleText = args[0];
+  const prompt = args[1] ?? '';
+  if (!scheduleText) throw new Error('Hermes stub cron create requires a schedule');
+  const flags = parseFlags(args.slice(2));
+  const { jobsPath, document } = readJobs(home);
+  const id = uniqueJobId(document, JSON.stringify(args));
+  const schedule = parseSchedule(scheduleText);
+  const script = typeof flags.get('--script') === 'string' ? flags.get('--script') : null;
+  const noAgent = flags.has('--no-agent');
+  const job = {
+    id,
+    name: typeof flags.get('--name') === 'string' ? flags.get('--name') : `fixture-${id}`,
+    prompt,
+    skills: [],
+    skill: typeof flags.get('--skill') === 'string' ? flags.get('--skill') : null,
+    model: typeof flags.get('--model') === 'string' ? flags.get('--model') : null,
+    provider: typeof flags.get('--provider') === 'string' ? flags.get('--provider') : null,
+    provider_snapshot: null,
+    model_snapshot: null,
+    base_url: null,
+    script,
+    no_agent: noAgent,
+    context_from: null,
+    schedule,
+    schedule_display: schedule.display,
+    repeat: { times: null, completed: 0 },
+    enabled: true,
+    state: 'scheduled',
+    paused_at: null,
+    paused_reason: null,
+    created_at: '2026-08-01T12:00:00.000000-05:00',
+    next_run_at: null,
+    last_run_at: null,
+    last_status: null,
+    last_error: null,
+    last_delivery_error: null,
+    deliver: typeof flags.get('--deliver') === 'string' ? flags.get('--deliver') : null,
+    origin: null,
+    enabled_toolsets: null,
+    workdir: typeof flags.get('--workdir') === 'string' ? flags.get('--workdir') : null,
+    fire_claim: null,
+  };
+  document.jobs.push(job);
+  writeJobs(jobsPath, document);
+  console.log(id);
+}
+
+function runCronEdit(home, jobId, args) {
+  const { jobsPath, document } = readJobs(home);
+  const job = requireJob(document, jobId);
+  if (!job) return;
+  const flags = parseFlags(args);
+  if (typeof flags.get('--schedule') === 'string') {
+    job.schedule = parseSchedule(flags.get('--schedule'));
+    job.schedule_display = job.schedule.display;
+  }
+  if (typeof flags.get('--prompt') === 'string') job.prompt = flags.get('--prompt');
+  if (typeof flags.get('--name') === 'string') job.name = flags.get('--name');
+  if (typeof flags.get('--deliver') === 'string') job.deliver = flags.get('--deliver');
+  writeJobs(jobsPath, document);
+  console.log(`updated ${jobId}`);
+}
+
+function runCronToggle(home, verb, jobId) {
+  const { jobsPath, document } = readJobs(home);
+  const job = requireJob(document, jobId);
+  if (!job) return;
+  const enabled = verb === 'resume';
+  job.enabled = enabled;
+  job.state = enabled ? 'scheduled' : 'paused';
+  job.paused_at = enabled ? null : '2026-08-01T12:05:00.000000-05:00';
+  job.paused_reason = enabled ? null : 'Paused by Hermes fixture stub';
+  writeJobs(jobsPath, document);
+  console.log(`${verb}d ${jobId}`);
+}
+
+function runCronRemove(home, jobId) {
+  const { jobsPath, document } = readJobs(home);
+  const index = document.jobs.findIndex((job) => job?.id === jobId);
+  if (index === -1) {
+    requireJob(document, jobId);
+    return;
+  }
+  document.jobs.splice(index, 1);
+  writeJobs(jobsPath, document);
+  console.log(`removed ${jobId}`);
+}
+
+function runCron(home, args) {
+  const [verb, jobId, ...rest] = args;
+  if (verb === 'create') return runCronCreate(home, args.slice(1));
+  if (verb === 'edit' && jobId) return runCronEdit(home, jobId, rest);
+  if ((verb === 'pause' || verb === 'resume') && jobId) {
+    return runCronToggle(home, verb, jobId);
+  }
+  if (verb === 'remove' && jobId) return runCronRemove(home, jobId);
+  console.error(`unhandled stub subcommand: cron ${args.join(' ')}`);
+  process.exitCode = 1;
+}
+
+try {
+  const { args, homeFlag } = extractHomeFlag(rawArgv);
+  const home = path.resolve(process.env.HERMES_HOME || homeFlag || process.cwd());
+  appendInvocationLog(process.env.HERMES_STUB_LOG, home);
+
+  if (args[0] === '-z') {
+    runOneShot(args);
+  } else if (args[0] === 'doctor') {
+    runDoctor();
+  } else if (args[0] === 'cron') {
+    runCron(home, args.slice(1));
+  } else {
+    console.error(`unhandled stub subcommand: ${args.join(' ')}`);
+    process.exitCode = 1;
+  }
+} catch (error) {
+  console.error(`Hermes stub error: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+}

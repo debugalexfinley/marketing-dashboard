@@ -14,6 +14,7 @@ export interface CronJob {
   schedule: string;
   cron: string;
   days?: string[];
+  deliveryError?: string | null;
 }
 
 export interface AgentDefinition {
@@ -28,6 +29,8 @@ export interface AgentDefinition {
   skills: AgentSkill[];
   cronJobs: CronJob[];
   workspace: string;
+  gatewayRunning?: boolean;
+  distribution?: string | null;
 }
 
 export type CronSchedule = {
@@ -53,6 +56,7 @@ export type CronJobConfig = {
   payload?: Record<string, unknown>;
   delivery?: Record<string, unknown>;
   skill?: string;
+  deliveryError?: string | null;
   state?: Record<string, unknown>;
   [k: string]: unknown;
 };
@@ -177,6 +181,15 @@ export type AgentUsageTotals = {
   tokens_week: number;
   cost_today: number;
   cost_week: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  estimated_cost_usd?: number;
+  actual_cost_usd?: number | null;
+  cost_status?: string | null;
+  cost_source?: string | null;
 };
 
 export type AgentModelConfig = {
@@ -185,6 +198,22 @@ export type AgentModelConfig = {
 };
 
 export type ModelRouting = Record<string, AgentModelConfig>;
+
+export type HermesModelRef = {
+  provider: string | null;
+  model: string;
+};
+
+export type HermesModelRouting = {
+  default: HermesModelRef;
+  fallbacks: HermesModelRef[];
+  moa?: {
+    enabled: boolean;
+    referenceModels: HermesModelRef[];
+    aggregator: HermesModelRef;
+  };
+  cronOverrides: Array<HermesModelRef & { jobId: string }>;
+};
 
 export type CommandResult = {
   stdout: string;
@@ -203,7 +232,8 @@ export type HealthReportKind =
   | 'memory-drift-weekly'
   | 'memory-alerts'
   | 'memory-policy'
-  | 'memory-alert-policy';
+  | 'memory-alert-policy'
+  | 'gateway';
 
 export interface AgentBackend {
   kind: BackendKind;

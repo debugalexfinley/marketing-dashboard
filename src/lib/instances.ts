@@ -7,6 +7,9 @@ export type HermesInstance = {
   id: string;
   label: string;
   openclawHome: string;
+  homeDir?: string;
+  profile?: string;
+  hermesBin?: string;
   cronUser?: string;
   kind?: BackendKind;
 };
@@ -33,7 +36,13 @@ function normalizeLabel(raw: unknown, fallback: string): string {
 
 function normalizeHome(raw: unknown): string {
   const v = String(raw ?? '').trim();
+  if (!v) return '';
   return path.resolve(expandHome(v));
+}
+
+function normalizeOptionalString(raw: unknown): string | undefined {
+  const v = typeof raw === 'string' ? raw.trim() : '';
+  return v || undefined;
 }
 
 function parseInstancesFromEnv(): HermesInstance[] | null {
@@ -48,13 +57,18 @@ function parseInstancesFromEnv(): HermesInstance[] | null {
     for (const item of parsed) {
       if (!isRecord(item)) continue;
       const id = normalizeId(item.id);
+      const kind: BackendKind = item.kind === 'hermes' ? 'hermes' : 'openclaw';
       const openclawHome = normalizeHome(item.openclawHome);
-      if (!id || !openclawHome) continue;
+      const homeDir = normalizeHome(item.homeDir);
+      if (!id || (!openclawHome && !(kind === 'hermes' && homeDir))) continue;
       out.push({
         id,
         label: normalizeLabel(item.label, id),
         openclawHome,
-        kind: item.kind === 'hermes' ? 'hermes' : 'openclaw',
+        homeDir: homeDir || undefined,
+        profile: normalizeOptionalString(item.profile),
+        hermesBin: normalizeOptionalString(item.hermesBin),
+        kind,
         cronUser:
           typeof item.cronUser === 'string' && item.cronUser.trim()
             ? item.cronUser.trim()
