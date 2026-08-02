@@ -119,6 +119,59 @@ export type Root = {
   agents?: string[];
 };
 
+export type InstanceSummary = {
+  id: string;
+  label: string;
+};
+
+export type WorkspaceEntry = {
+  path: string;
+  type: 'file' | 'dir';
+  size?: number;
+  mtimeMs?: number;
+};
+
+export type WorkspaceRoot = Omit<Root, 'agents'> & {
+  abs: string;
+};
+
+export type WorkspaceReadResult =
+  | { root: WorkspaceRoot; type: 'directory'; path?: string; entries: WorkspaceEntry[] }
+  | {
+      root: WorkspaceRoot;
+      type: 'file';
+      path: string;
+      size: number;
+      mtimeMs: number;
+      content: string;
+    }
+  | {
+      root: WorkspaceRoot;
+      type: 'error';
+      error: 'Invalid path' | 'Not found' | 'Unsupported file type' | 'File too large';
+    };
+
+export type WorkspaceMutationResult =
+  | { ok: true }
+  | { ok: false; error: 'Root is read-only' | 'Invalid path' | 'Not found' };
+
+export type DeployStatus = {
+  serviceName: string;
+  serviceState: string;
+  scriptPath: string;
+  lockFile: string;
+  lockExists: boolean;
+  runningPids: string[];
+  openclawBin: string;
+  configValidation: {
+    available: boolean;
+    ok: boolean;
+    details?: unknown;
+    error?: string;
+  };
+  latestLog: { path: string; mtime: string; tail: string[] } | null;
+};
+
 export type AgentUsageTotals = {
   tokens_today: number;
   tokens_week: number;
@@ -156,6 +209,9 @@ export interface AgentBackend {
   kind: BackendKind;
   readonly instanceId: string;
   cronWritesAllowed(): boolean;
+  policyWritesAllowed(): boolean;
+  workspaceWritesAllowed(): boolean;
+  listInstances(): Promise<{ defaultInstance: string; instances: InstanceSummary[] }>;
   listActionMappings(): Promise<Record<string, { agent: string; skill: string }>>;
   listAgents(): Promise<AgentDefinition[]>;
   listConfiguredAgents(): Promise<AgentDefinition[]>;
@@ -192,6 +248,19 @@ export interface AgentBackend {
   ): Promise<void>;
   readAuditLog(name: string, limit: number): Promise<unknown[]>;
   readDeployLogs(): Promise<string[]>;
+  readDeployStatus(): Promise<DeployStatus>;
   listWorkspaceRoots(): Promise<Root[]>;
   resolveWorkspacePath(rootId: string, relPath: string): Promise<string>;
+  readWorkspace(rootId: string, relPath: string): Promise<WorkspaceReadResult>;
+  createWorkspaceFile(
+    rootId: string,
+    relPath: string,
+    content: string,
+  ): Promise<WorkspaceMutationResult>;
+  updateWorkspaceFile(
+    rootId: string,
+    relPath: string,
+    content: string,
+  ): Promise<WorkspaceMutationResult>;
+  deleteWorkspaceFile(rootId: string, relPath: string): Promise<WorkspaceMutationResult>;
 }

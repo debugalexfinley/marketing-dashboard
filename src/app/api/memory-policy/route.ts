@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { requireApiUser } from '@/lib/api-auth';
 import { requireUser } from '@/lib/auth';
-import { allowPolicyWrite, getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,44 +64,13 @@ function getInstanceId(request: Request): string | null {
   }
 }
 
-function policyPaths(instanceId: string | null) {
-  const instance = getInstance(instanceId);
-  const { healthDir, logsDir } = resolveOpenClawPaths(instance);
-  return {
-    instance,
-    policyFile: path.join(healthDir, 'memory-policy.json'),
-    auditFile: path.join(logsDir, 'memory-policy-audit.jsonl'),
-  };
-}
-
-function readPolicy(policyFile: string): MemoryPolicy {
-  try {
-    if (!fs.existsSync(policyFile)) return DEFAULT_POLICY;
-    const raw = fs.readFileSync(policyFile, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<MemoryPolicy>;
-    return sanitize(parsed);
-  } catch {
-    return DEFAULT_POLICY;
-  }
-}
-
-function writePolicy(policyFile: string, policy: MemoryPolicy): void {
-  fs.mkdirSync(path.dirname(policyFile), { recursive: true });
-  fs.writeFileSync(policyFile, JSON.stringify(policy, null, 2) + '\n', 'utf-8');
-}
-
-function appendAudit(auditFile: string, payload: Record<string, unknown>): void {
-  fs.mkdirSync(path.dirname(auditFile), { recursive: true });
-  fs.appendFileSync(auditFile, `${JSON.stringify(payload)}\n`, 'utf-8');
-}
-
 export async function GET(request: Request) {
   const auth = requireApiUser(request);
   if (auth) return auth;
   try {
-    const { instance, policyFile } = policyPaths(getInstanceId(request));
-    const policy = readPolicy(policyFile);
-    return NextResponse.json({ instance: instance.id, policy });
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const policy = await backend.readHealthReport('memory-policy');
+    return NextResponse.json({ instance: backend.instanceId, policy });
   } catch (error) {
     console.error('GET /api/memory-policy error:', error);
     return NextResponse.json({ error: 'Failed to read memory policy' }, { status: 500 });
@@ -113,7 +80,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const auth = requireApiUser(request);
   if (auth) return auth;
-  if (!allowPolicyWrite()) {
+  const requestedBackend = resolveBackend(getInstanceId(request) ?? undefined);
+  if (!requestedBackend.policyWritesAllowed()) {
     return NextResponse.json(
       { error: 'Policy write disabled (set HERMES_ALLOW_POLICY_WRITE=true to enable)' },
       { status: 403 },
@@ -124,22 +92,20 @@ export async function POST(request: Request) {
     const actor = requireUser(request);
     const body = (await request.json()) as Partial<MemoryPolicy> & { instance?: string; namespace?: string };
     const instanceId = body.instance ?? body.namespace ?? getInstanceId(request) ?? undefined;
-    const { instance, policyFile, auditFile } = policyPaths(instanceId ?? null);
-    const before = readPolicy(policyFile);
+    const backend = resolveBackend(instanceId);
+    const before = await backend.readHealthReport('memory-policy');
     const policy = sanitize(body);
-    writePolicy(policyFile, policy);
-    appendAudit(auditFile, {
+    await backend.writeHealthPolicy('memory-policy', policy, {
       timestamp: new Date().toISOString(),
       actor: actor.username,
       actor_role: actor.role,
-      instance: instance.id,
+      instance: backend.instanceId,
       before,
       after: policy,
     });
-    return NextResponse.json({ ok: true, instance: instance.id, policy });
+    return NextResponse.json({ ok: true, instance: backend.instanceId, policy });
   } catch (error) {
     console.error('POST /api/memory-policy error:', error);
     return NextResponse.json({ error: 'Failed to update memory policy' }, { status: 500 });
   }
 }
-

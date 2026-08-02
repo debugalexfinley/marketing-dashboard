@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { requireApiUser } from '@/lib/api-auth';
-import { getInstance, resolveOpenClawPaths } from '@/lib/instances';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,22 +25,6 @@ function isAuditRow(value: unknown): value is AuditRow {
   return isRecord(value) && typeof value.timestamp === 'string';
 }
 
-function readJsonl(filePath: string): unknown[] {
-  if (!fs.existsSync(filePath)) return [];
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  const out: unknown[] = [];
-  for (const line of raw.split('\n')) {
-    const s = line.trim();
-    if (!s) continue;
-    try {
-      out.push(JSON.parse(s));
-    } catch {
-      continue;
-    }
-  }
-  return out;
-}
-
 function tsMs(ts: string | undefined): number {
   if (!ts) return Number.NaN;
   return Date.parse(ts);
@@ -65,24 +47,18 @@ export async function GET(request: Request) {
   const auth = requireApiUser(request);
   if (auth) return auth;
   try {
-    const instance = getInstance(getInstanceId(request));
-    const { logsDir } = resolveOpenClawPaths(instance);
-
-    const historyPath = path.join(logsDir, 'memory-drift-history.jsonl');
-    const policyAuditPath = path.join(logsDir, 'memory-policy-audit.jsonl');
-    const alertPolicyAuditPath = path.join(logsDir, 'memory-alert-policy-audit.jsonl');
-
-    const history = readJsonl(historyPath) as DriftRow[];
-    const policyAudit = readJsonl(policyAuditPath);
-    const alertPolicyAudit = readJsonl(alertPolicyAuditPath);
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const history = await backend.readAuditLog('memory-drift-history', 0) as DriftRow[];
+    const policyAudit = await backend.readAuditLog('memory-policy-audit', 0);
+    const alertPolicyAudit = await backend.readAuditLog('memory-alert-policy-audit', 0);
     const changes = [...policyAudit, ...alertPolicyAudit]
       .filter(isAuditRow)
       .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
 
     if (history.length < 2 || changes.length === 0) {
       return NextResponse.json({
-        instance: instance.id,
-        namespace: instance.id, // back-compat for older UI
+        instance: backend.instanceId,
+        namespace: backend.instanceId, // back-compat for older UI
         available: false,
         reason: 'insufficient_history_or_policy_changes',
         history_points: history.length,
@@ -104,8 +80,8 @@ export async function GET(request: Request) {
     const afterNeverRatio = Number(after.never_accessed || 0) / afterTotal;
 
     return NextResponse.json({
-      instance: instance.id,
-      namespace: instance.id,
+      instance: backend.instanceId,
+      namespace: backend.instanceId,
       available: true,
       latest_policy_change: latestChange.timestamp,
       baseline_at: before.timestamp,

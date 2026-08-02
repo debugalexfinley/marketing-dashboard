@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { sendAgentMessage } from '@/lib/command';
 import { requireApiEditor, requireApiUser } from '@/lib/api-auth';
-import { getAgentIds } from '@/lib/agent-config';
 import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
+import { resolveBackend } from '@/lib/backend';
+import type { AgentBackend } from '@/lib/backend/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +18,10 @@ interface MessageRow {
   message_type: string;
   metadata: string | null;
   created_at: number;
+}
+
+function getInstanceId(req: NextRequest): string | null {
+  return req.nextUrl.searchParams.get('instance') || req.nextUrl.searchParams.get('namespace');
 }
 
 export async function GET(req: NextRequest) {
@@ -59,6 +63,7 @@ export async function POST(req: NextRequest) {
   try {
     const actor = requireUser(req as Request);
     const db = getDb();
+    const backend = resolveBackend(getInstanceId(req) ?? undefined);
     const body = await req.json();
     const from = (typeof actor?.username === 'string' && actor.username.trim()) ? actor.username.trim() : 'operator';
     const to = body.to ? (body.to as string).trim() : null;
@@ -93,9 +98,10 @@ export async function POST(req: NextRequest) {
     });
 
     // If recipient is a known agent, forward via gateway (async, non-blocking)
-    if (to && getAgentIds().includes(to) && body.forward !== false) {
+    const agentIds = (await backend.listConfiguredAgents()).map((agent) => agent.id);
+    if (to && agentIds.includes(to) && body.forward !== false) {
       // Fire-and-forget: forward to agent, save response when it comes back
-      forwardToAgent(db, to, content, conversation_id, from).catch(err => {
+      forwardToAgent(backend, db, to, content, conversation_id, from).catch(err => {
         console.error(`Failed to forward to ${to}:`, err);
         // Save error as system message
         db.prepare(`
@@ -113,13 +119,14 @@ export async function POST(req: NextRequest) {
 }
 
 async function forwardToAgent(
+  backend: AgentBackend,
   db: ReturnType<typeof getDb>,
   agentId: string,
   content: string,
   conversationId: string,
   from: string,
 ) {
-  const { response } = await sendAgentMessage(agentId, `Message from ${from}: ${content}`);
+  const { response } = await backend.sendAgentMessage(agentId, `Message from ${from}: ${content}`);
 
   if (response) {
     db.prepare(`

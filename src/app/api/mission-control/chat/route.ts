@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { sendAgentMessage, sendOrchestratorMessage } from '@/lib/command';
 import { requireApiAdmin } from '@/lib/api-auth';
 import { requireAdmin } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
-import { getAgentIds } from '@/lib/agent-config';
+import { resolveBackend } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,6 +43,10 @@ function parseBridgeConversation(conversationId: string): { from_agent: string; 
   return { from_agent: match[1], to_agent: match[2] };
 }
 
+function getInstanceId(request: NextRequest): string | null {
+  return request.nextUrl.searchParams.get('instance') || request.nextUrl.searchParams.get('namespace');
+}
+
 export async function GET(request: NextRequest) {
   const auth = requireApiAdmin(request as Request);
   if (auth) return auth;
@@ -54,7 +57,8 @@ export async function GET(request: NextRequest) {
     const toAgent = request.nextUrl.searchParams.get('to_agent') || undefined;
     const limit = Math.min(200, Math.max(1, Number(request.nextUrl.searchParams.get('limit') || 100)));
     const db = getDb();
-    const agents = getAgentIds();
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const agents = (await backend.listConfiguredAgents()).map((agent) => agent.id);
 
     if (listOnly) {
       const pattern = mode === 'agent_bridge' ? 'mc:a2a:%' : 'mc:orchestrator';
@@ -119,7 +123,8 @@ export async function POST(request: NextRequest) {
 
     const fromAgent = body.from_agent;
     const toAgent = body.to_agent;
-    const agents = getAgentIds();
+    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const agents = (await backend.listConfiguredAgents()).map((agent) => agent.id);
     if (mode === 'agent_bridge') {
       if (!isAgentId(fromAgent, agents) || !isAgentId(toAgent, agents)) {
         return NextResponse.json({ error: 'from_agent and to_agent must be valid agent ids' }, { status: 400 });
@@ -180,12 +185,12 @@ export async function POST(request: NextRequest) {
 
     let responseText = '';
     if (mode === 'orchestrator') {
-      const result = await sendOrchestratorMessage(content);
-      responseText = result.response;
+      const result = await backend.sendOrchestratorMessage(content);
+      responseText = result.response ?? '';
     } else {
       const bridgedPrompt = `Message from ${fromAgent}: ${content}`;
-      const result = await sendAgentMessage(toAgent as string, bridgedPrompt);
-      responseText = result.response;
+      const result = await backend.sendAgentMessage(toAgent as string, bridgedPrompt);
+      responseText = result.response ?? '';
     }
 
     if (responseText) {

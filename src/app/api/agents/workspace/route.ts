@@ -1,35 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { requireApiEditor, requireApiUser } from '@/lib/api-auth';
 import { requireUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
-import { allowWorkspaceWrite, getInstance, resolveOpenClawPaths } from '@/lib/instances';
-import {
-  getAgentWorkspaceRoot,
-  isAllowedWorkspaceWritePath,
-  resolveWorkspacePath,
-  WORKSPACE_MAX_FILE_BYTES,
-} from '@/lib/agent-workspace';
+import { resolveBackend } from '@/lib/backend';
+import { isAllowedWorkspaceWritePath, WORKSPACE_MAX_FILE_BYTES } from '@/lib/agent-workspace';
 
 export const dynamic = 'force-dynamic';
-
-type Entry = {
-  path: string; // relative, posix
-  type: 'file' | 'dir';
-  size?: number;
-  mtimeMs?: number;
-};
-
-type RootKind = 'agent-workspace' | 'openclaw' | 'workspace' | 'agent';
-
-type ResolvedRoot = {
-  id: string;
-  label: string;
-  kind: RootKind;
-  abs: string;
-  writable: boolean;
-};
 
 function getInstanceIdFromRequest(req: NextRequest): string | null {
   try {
@@ -40,141 +16,9 @@ function getInstanceIdFromRequest(req: NextRequest): string | null {
   }
 }
 
-function shouldHide(relPosix: string): boolean {
-  const segments = relPosix.split('/').filter(Boolean);
-  if (segments.some((s) => s.startsWith('.'))) return true;
-  if (segments.some((s) => s.toLowerCase() === 'node_modules')) return true;
-  if (segments.some((s) => s.toLowerCase() === 'credentials')) return true;
-  if (segments.some((s) => s.toLowerCase() === 'state')) return true;
-  if (segments.some((s) => s.toLowerCase() === 'logs')) return true;
-  if (segments.some((s) => s.toLowerCase() === 'sessions')) return true;
-  if (segments.some((s) => s.toLowerCase() === 'sandboxes')) return true;
-  if (segments.some((s) => s.toLowerCase() === 'sandbox')) return true;
-  return false;
-}
-
-async function listDir(root: string, relDir: string, depth: number, maxEntries: number): Promise<Entry[]> {
-  const absDir = relDir ? resolveWorkspacePath(root, relDir) : root;
-  if (!absDir) return [];
-
-  const out: Entry[] = [];
-  const queue: Array<{ abs: string; rel: string; d: number }> = [{ abs: absDir, rel: relDir, d: 0 }];
-
-  while (queue.length > 0 && out.length < maxEntries) {
-    const cur = queue.shift()!;
-    let names: string[] = [];
-    try {
-      names = await fs.readdir(cur.abs);
-    } catch {
-      continue;
-    }
-
-    for (const name of names) {
-      if (!name) continue;
-      const abs = path.join(cur.abs, name);
-      let st: import('node:fs').Stats | null = null;
-      try {
-        st = await fs.stat(abs);
-      } catch {
-        continue;
-      }
-
-      const rel = cur.rel ? `${cur.rel.replace(/\/+$/, '')}/${name}` : name;
-      const relPosix = rel.split(path.sep).join('/');
-      if (shouldHide(relPosix)) continue;
-
-      if (st.isDirectory()) {
-        out.push({ path: relPosix, type: 'dir', mtimeMs: st.mtimeMs });
-        if (cur.d + 1 < depth) {
-          queue.push({ abs, rel: relPosix, d: cur.d + 1 });
-        }
-      } else if (st.isFile()) {
-        out.push({ path: relPosix, type: 'file', size: st.size, mtimeMs: st.mtimeMs });
-      }
-
-      if (out.length >= maxEntries) break;
-    }
-  }
-
-  out.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    return a.path.localeCompare(b.path);
-  });
-  return out;
-}
-
-async function writeFileAtomic(absPath: string, content: string): Promise<void> {
-  const dir = path.dirname(absPath);
-  const base = path.basename(absPath);
-  const tmp = path.join(dir, `.${base}.tmp.${Date.now()}`);
-  await fs.writeFile(tmp, content, 'utf-8');
-  await fs.rename(tmp, absPath);
-}
-
-function resolveRootFromId(req: NextRequest, rootIdRaw: string | null | undefined): ResolvedRoot {
-  const rootId = String(rootIdRaw ?? '').trim() || 'agent-workspace';
-
-  if (rootId === 'agent-workspace') {
-    return {
-      id: rootId,
-      label: 'Agent Workspace',
-      kind: 'agent-workspace',
-      abs: getAgentWorkspaceRoot(),
-      writable: true,
-    };
-  }
-
-  const instanceId = getInstanceIdFromRequest(req);
-  const instance = getInstance(instanceId);
-  const { openclawHome } = resolveOpenClawPaths(instance);
-  const openclawResolved = path.resolve(openclawHome);
-
-  if (rootId === 'openclaw') {
-    return {
-      id: rootId,
-      label: '.openclaw',
-      kind: 'openclaw',
-      abs: openclawResolved,
-      writable: false,
-    };
-  }
-
-  if (rootId === 'shared' || /^workspace-[a-z0-9-]+$/i.test(rootId)) {
-    const abs = path.resolve(openclawResolved, rootId);
-    if (!abs.startsWith(openclawResolved + path.sep)) {
-      throw new Error('Invalid root');
-    }
-    return {
-      id: rootId,
-      label: rootId === 'shared' ? 'Shared' : rootId,
-      kind: 'workspace',
-      abs,
-      writable: true,
-    };
-  }
-
-  if (rootId.startsWith('agent:')) {
-    const name = rootId.slice('agent:'.length).trim();
-    if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) throw new Error('Invalid root');
-    const abs = path.resolve(openclawResolved, 'agents', name, 'agent');
-    if (!abs.startsWith(openclawResolved + path.sep)) {
-      throw new Error('Invalid root');
-    }
-    return {
-      id: rootId,
-      label: `Agent: ${name}`,
-      kind: 'agent',
-      abs,
-      writable: true,
-    };
-  }
-
-  throw new Error('Unknown root');
-}
-
-async function assertDirExists(abs: string): Promise<void> {
-  const st = await fs.stat(abs).catch(() => null);
-  if (!st || !st.isDirectory()) throw new Error('Root not found');
+function workspaceError(error: 'Invalid path' | 'Not found' | 'Unsupported file type' | 'File too large' | 'Root is read-only') {
+  const status = error === 'Not found' ? 404 : error === 'File too large' ? 413 : error === 'Root is read-only' ? 403 : 400;
+  return NextResponse.json({ error }, { status });
 }
 
 export async function GET(req: NextRequest) {
@@ -184,35 +28,35 @@ export async function GET(req: NextRequest) {
   const rel = req.nextUrl.searchParams.get('path')?.trim() || '';
 
   try {
-    const root = resolveRootFromId(req, req.nextUrl.searchParams.get('rootId'));
-    await assertDirExists(root.abs);
+    const backend = resolveBackend(getInstanceIdFromRequest(req) ?? undefined);
+    const result = await backend.readWorkspace(
+      req.nextUrl.searchParams.get('rootId') ?? '',
+      rel,
+    );
+    if (result.type === 'error') return workspaceError(result.error);
 
-    if (!rel) {
-      const depth = root.kind === 'openclaw' ? 2 : 4;
-      const entries = await listDir(root.abs, '', depth, 5000);
-      return NextResponse.json({ rootId: root.id, rootLabel: root.label, kind: root.kind, writable: root.writable, entries });
+    const { root } = result;
+    if (result.type === 'directory') {
+      return NextResponse.json({
+        rootId: root.id,
+        rootLabel: root.label,
+        kind: root.kind,
+        writable: root.writable,
+        ...(result.path ? { path: result.path } : {}),
+        entries: result.entries,
+      });
     }
 
-    const abs = resolveWorkspacePath(root.abs, rel);
-    if (!abs) return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
-
-    const st = await fs.stat(abs).catch(() => null);
-    if (!st) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
-    if (st.isDirectory()) {
-      const entries = await listDir(root.abs, rel, 2, 5000);
-      return NextResponse.json({ rootId: root.id, rootLabel: root.label, kind: root.kind, writable: root.writable, path: rel, entries });
-    }
-
-    if (!st.isFile()) {
-      return NextResponse.json({ error: 'Unsupported file type' }, { status: 400 });
-    }
-    if (st.size > WORKSPACE_MAX_FILE_BYTES) {
-      return NextResponse.json({ error: 'File too large' }, { status: 413 });
-    }
-
-    const content = await fs.readFile(abs, 'utf-8');
-    return NextResponse.json({ rootId: root.id, rootLabel: root.label, kind: root.kind, writable: root.writable, path: rel, size: st.size, mtimeMs: st.mtimeMs, content });
+    return NextResponse.json({
+      rootId: root.id,
+      rootLabel: root.label,
+      kind: root.kind,
+      writable: root.writable,
+      path: result.path,
+      size: result.size,
+      mtimeMs: result.mtimeMs,
+      content: result.content,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -221,7 +65,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const auth = requireApiEditor(req as unknown as Request);
   if (auth) return auth;
-  if (!allowWorkspaceWrite()) {
+  const backend = resolveBackend(getInstanceIdFromRequest(req) ?? undefined);
+  if (!backend.workspaceWritesAllowed()) {
     return NextResponse.json({ error: 'Workspace writes are disabled (set HERMES_ALLOW_WORKSPACE_WRITE=true)' }, { status: 403 });
   }
 
@@ -239,22 +84,13 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const root = resolveRootFromId(req, rootId);
-    await assertDirExists(root.abs);
-    if (!root.writable) {
-      return NextResponse.json({ error: 'Root is read-only' }, { status: 403 });
-    }
-
-    const abs = resolveWorkspacePath(root.abs, rel);
-    if (!abs) return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
-
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, content, 'utf-8');
+    const result = await backend.createWorkspaceFile(rootId, rel, content);
+    if (!result.ok) return workspaceError(result.error);
 
     logAudit({
       actor,
       action: 'workspace.create',
-      target: `workspace:${root.id}:${rel}`,
+      target: `workspace:${rootId || 'agent-workspace'}:${rel}`,
       detail: { bytes: Buffer.byteLength(content, 'utf-8') },
     });
 
@@ -267,7 +103,8 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const auth = requireApiEditor(req as unknown as Request);
   if (auth) return auth;
-  if (!allowWorkspaceWrite()) {
+  const backend = resolveBackend(getInstanceIdFromRequest(req) ?? undefined);
+  if (!backend.workspaceWritesAllowed()) {
     return NextResponse.json({ error: 'Workspace writes are disabled (set HERMES_ALLOW_WORKSPACE_WRITE=true)' }, { status: 403 });
   }
 
@@ -285,27 +122,13 @@ export async function PUT(req: NextRequest) {
   }
 
   try {
-    const root = resolveRootFromId(req, rootId);
-    await assertDirExists(root.abs);
-    if (!root.writable) {
-      return NextResponse.json({ error: 'Root is read-only' }, { status: 403 });
-    }
-
-    const abs = resolveWorkspacePath(root.abs, rel);
-    if (!abs) return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
-
-    const st = await fs.stat(abs).catch(() => null);
-    if (!st || !st.isFile()) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
-    const backup = `${abs}.bak.${new Date().toISOString().replaceAll(':', '').replaceAll('.', '')}`;
-    await fs.copyFile(abs, backup).catch(() => null);
-
-    await writeFileAtomic(abs, content);
+    const result = await backend.updateWorkspaceFile(rootId, rel, content);
+    if (!result.ok) return workspaceError(result.error);
 
     logAudit({
       actor,
       action: 'workspace.update',
-      target: `workspace:${root.id}:${rel}`,
+      target: `workspace:${rootId || 'agent-workspace'}:${rel}`,
       detail: { bytes: Buffer.byteLength(content, 'utf-8') },
     });
 
@@ -318,7 +141,8 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = requireApiEditor(req as unknown as Request);
   if (auth) return auth;
-  if (!allowWorkspaceWrite()) {
+  const backend = resolveBackend(getInstanceIdFromRequest(req) ?? undefined);
+  if (!backend.workspaceWritesAllowed()) {
     return NextResponse.json({ error: 'Workspace writes are disabled (set HERMES_ALLOW_WORKSPACE_WRITE=true)' }, { status: 403 });
   }
 
@@ -331,24 +155,13 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    const root = resolveRootFromId(req, rootId);
-    await assertDirExists(root.abs);
-    if (!root.writable) {
-      return NextResponse.json({ error: 'Root is read-only' }, { status: 403 });
-    }
-
-    const abs = resolveWorkspacePath(root.abs, rel);
-    if (!abs) return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
-
-    const st = await fs.stat(abs).catch(() => null);
-    if (!st || !st.isFile()) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
-    await fs.unlink(abs);
+    const result = await backend.deleteWorkspaceFile(rootId, rel);
+    if (!result.ok) return workspaceError(result.error);
 
     logAudit({
       actor,
       action: 'workspace.delete',
-      target: `workspace:${root.id}:${rel}`,
+      target: `workspace:${rootId || 'agent-workspace'}:${rel}`,
       detail: null,
     });
 

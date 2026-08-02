@@ -1,13 +1,14 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs, { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import {
   getAgentWorkspaceRoot,
+  WORKSPACE_MAX_FILE_BYTES,
   resolveWorkspacePath as resolveWorkspaceRelativePath,
 } from '../agent-workspace';
 import { getHermesStateDir } from '../hermes-state';
-import type { HermesInstance } from '../instances';
+import { getDefaultInstanceId, getInstances, type HermesInstance } from '../instances';
 import type {
   AgentBackend,
   AgentDefinition,
@@ -19,12 +20,17 @@ import type {
   CronJobConfig,
   CronJobsFile,
   CronRun,
+  DeployStatus,
   HealthReportKind,
   ModelRouting,
   Root,
   RootKind,
   SessionEntry,
   SessionFileRef,
+  WorkspaceEntry,
+  WorkspaceMutationResult,
+  WorkspaceReadResult,
+  WorkspaceRoot,
 } from './types';
 
 const ADMIN_CLI = process.env.HERMES_ADMIN_CLI || process.env.OPENCLAW_BIN || 'openclaw';
@@ -684,6 +690,99 @@ function resolveWorkspaceToRootId(
   return null;
 }
 
+function shouldHideWorkspaceEntry(relPosix: string): boolean {
+  const segments = relPosix.split('/').filter(Boolean);
+  if (segments.some((segment) => segment.startsWith('.'))) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'node_modules')) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'credentials')) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'state')) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'logs')) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'sessions')) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'sandboxes')) return true;
+  if (segments.some((segment) => segment.toLowerCase() === 'sandbox')) return true;
+  return false;
+}
+
+async function listWorkspaceDirectory(
+  root: string,
+  relDir: string,
+  depth: number,
+  maxEntries: number,
+): Promise<WorkspaceEntry[]> {
+  const absDir = relDir ? resolveWorkspaceRelativePath(root, relDir) : root;
+  if (!absDir) return [];
+
+  const out: WorkspaceEntry[] = [];
+  const queue: Array<{ abs: string; rel: string; d: number }> = [
+    { abs: absDir, rel: relDir, d: 0 },
+  ];
+  while (queue.length > 0 && out.length < maxEntries) {
+    const cur = queue.shift()!;
+    let names: string[] = [];
+    try {
+      names = await fsPromises.readdir(cur.abs);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name) continue;
+      const abs = path.join(cur.abs, name);
+      const stat = await fsPromises.stat(abs).catch(() => null);
+      if (!stat) continue;
+      const rel = cur.rel ? `${cur.rel.replace(/\/+$/, '')}/${name}` : name;
+      const relPosix = rel.split(path.sep).join('/');
+      if (shouldHideWorkspaceEntry(relPosix)) continue;
+      if (stat.isDirectory()) {
+        out.push({ path: relPosix, type: 'dir', mtimeMs: stat.mtimeMs });
+        if (cur.d + 1 < depth) queue.push({ abs, rel: relPosix, d: cur.d + 1 });
+      } else if (stat.isFile()) {
+        out.push({ path: relPosix, type: 'file', size: stat.size, mtimeMs: stat.mtimeMs });
+      }
+      if (out.length >= maxEntries) break;
+    }
+  }
+  out.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.path.localeCompare(b.path);
+  });
+  return out;
+}
+
+function safeExec(command: string[], fallback = ''): string {
+  try {
+    return execFileSync(command[0], command.slice(1), { encoding: 'utf-8' }).trim();
+  } catch {
+    return fallback;
+  }
+}
+
+function validateOpenClawConfig(bin: string): DeployStatus['configValidation'] {
+  try {
+    const stdout = execFileSync(bin, ['config', 'validate', '--json'], {
+      encoding: 'utf-8',
+    }).trim();
+    if (!stdout) return { available: true, ok: true };
+    try {
+      const details = JSON.parse(stdout) as Record<string, unknown>;
+      return {
+        available: true,
+        ok: typeof details.valid === 'boolean' ? details.valid : true,
+        details,
+      };
+    } catch {
+      return { available: true, ok: true, details: stdout };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const missing = /ENOENT|not found/i.test(message);
+    return {
+      available: !missing,
+      ok: false,
+      error: missing ? `${bin} not found in PATH` : message,
+    };
+  }
+}
+
 export class OpenClawBackend implements AgentBackend {
   readonly kind = 'openclaw' as const;
   readonly instanceId: string;
@@ -698,6 +797,24 @@ export class OpenClawBackend implements AgentBackend {
 
   cronWritesAllowed(): boolean {
     return allowCronWrite();
+  }
+
+  policyWritesAllowed(): boolean {
+    return allowPolicyWrite();
+  }
+
+  workspaceWritesAllowed(): boolean {
+    return allowWorkspaceWrite();
+  }
+
+  async listInstances(): Promise<{
+    defaultInstance: string;
+    instances: Array<{ id: string; label: string }>;
+  }> {
+    return {
+      defaultInstance: getDefaultInstanceId(),
+      instances: getInstances().map((instance) => ({ id: instance.id, label: instance.label })),
+    };
   }
 
   async listActionMappings(): Promise<Record<string, { agent: string; skill: string }>> {
@@ -1052,6 +1169,50 @@ export class OpenClawBackend implements AgentBackend {
     }
   }
 
+  async readDeployStatus(): Promise<DeployStatus> {
+    const lockFile =
+      process.env.HERMES_DEPLOY_LOCK_FILE?.trim() || '/tmp/hermes-dashboard-deploy.lock';
+    const logDir =
+      process.env.HERMES_DEPLOY_LOG_DIR?.trim() || path.join(this.paths.logsDir, 'deploy');
+    const scriptPath = process.env.HERMES_DEPLOY_SCRIPT_PATH?.trim() || '';
+    const serviceName = process.env.HERMES_SERVICE_NAME?.trim() || 'hermes-dashboard.service';
+    const openclawBin = process.env.HERMES_ADMIN_CLI || process.env.OPENCLAW_BIN || 'openclaw';
+    const running = scriptPath
+      ? safeExec(['pgrep', '-af', path.basename(scriptPath)], '')
+      : safeExec(['pgrep', '-af', 'deploy'], '');
+    const serviceState = safeExec(['systemctl', 'is-active', serviceName], 'unknown');
+
+    let latestLog: DeployStatus['latestLog'] = null;
+    if (fs.existsSync(logDir)) {
+      const files = fs
+        .readdirSync(logDir)
+        .filter((name) => name.includes('deploy') && name.endsWith('.log'))
+        .map((name) => path.join(logDir, name));
+      if (files.length > 0) {
+        files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+        const filePath = files[0];
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        latestLog = {
+          path: filePath,
+          mtime: new Date(fs.statSync(filePath).mtimeMs).toISOString(),
+          tail: raw.trim().split('\n').slice(-80),
+        };
+      }
+    }
+
+    return {
+      serviceName,
+      serviceState,
+      scriptPath,
+      lockFile,
+      lockExists: fs.existsSync(lockFile),
+      runningPids: running ? running.split('\n').filter(Boolean) : [],
+      openclawBin,
+      configValidation: validateOpenClawConfig(openclawBin),
+      latestLog,
+    };
+  }
+
   async listWorkspaceRoots(): Promise<Root[]> {
     const { openclawHome, openclawConfigPath } = this.paths;
     const agentWorkspaceRoot = getAgentWorkspaceRoot();
@@ -1123,28 +1284,138 @@ export class OpenClawBackend implements AgentBackend {
   }
 
   async resolveWorkspacePath(rootIdRaw: string, relPath: string): Promise<string> {
-    const rootId = rootIdRaw.trim() || 'agent-workspace';
-    let root: string;
-    if (rootId === 'agent-workspace') {
-      root = getAgentWorkspaceRoot();
-    } else {
-      const openclawHome = path.resolve(this.paths.openclawHome);
-      if (rootId === 'openclaw') {
-        root = openclawHome;
-      } else if (rootId === 'shared' || /^workspace-[a-z0-9-]+$/i.test(rootId)) {
-        root = path.resolve(openclawHome, rootId);
-        if (!root.startsWith(`${openclawHome}${path.sep}`)) throw new Error('Invalid root');
-      } else if (rootId.startsWith('agent:')) {
-        const name = rootId.slice('agent:'.length).trim();
-        if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) throw new Error('Invalid root');
-        root = path.resolve(openclawHome, 'agents', name, 'agent');
-        if (!root.startsWith(`${openclawHome}${path.sep}`)) throw new Error('Invalid root');
-      } else {
-        throw new Error('Unknown root');
-      }
-    }
-    const resolved = relPath ? resolveWorkspaceRelativePath(root, relPath) : root;
+    const root = this.resolveWorkspaceRoot(rootIdRaw);
+    const resolved = relPath ? resolveWorkspaceRelativePath(root.abs, relPath) : root.abs;
     if (!resolved) throw new Error('Invalid path');
     return resolved;
+  }
+
+  private resolveWorkspaceRoot(rootIdRaw: string): WorkspaceRoot {
+    const rootId = rootIdRaw.trim() || 'agent-workspace';
+    if (rootId === 'agent-workspace') {
+      return {
+        id: rootId,
+        label: 'Agent Workspace',
+        kind: 'agent-workspace',
+        abs: getAgentWorkspaceRoot(),
+        writable: true,
+      };
+    }
+    const openclawHome = path.resolve(this.paths.openclawHome);
+    if (rootId === 'openclaw') {
+      return { id: rootId, label: '.openclaw', kind: 'openclaw', abs: openclawHome, writable: false };
+    }
+    if (rootId === 'shared' || /^workspace-[a-z0-9-]+$/i.test(rootId)) {
+      const abs = path.resolve(openclawHome, rootId);
+      if (!abs.startsWith(`${openclawHome}${path.sep}`)) throw new Error('Invalid root');
+      return {
+        id: rootId,
+        label: rootId === 'shared' ? 'Shared' : rootId,
+        kind: 'workspace',
+        abs,
+        writable: true,
+      };
+    }
+    if (rootId.startsWith('agent:')) {
+      const name = rootId.slice('agent:'.length).trim();
+      if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) throw new Error('Invalid root');
+      const abs = path.resolve(openclawHome, 'agents', name, 'agent');
+      if (!abs.startsWith(`${openclawHome}${path.sep}`)) throw new Error('Invalid root');
+      return {
+        id: rootId,
+        label: `Agent: ${name}`,
+        kind: 'agent',
+        abs,
+        writable: true,
+      };
+    }
+    throw new Error('Unknown root');
+  }
+
+  private async requireWorkspaceRoot(rootId: string): Promise<WorkspaceRoot> {
+    const root = this.resolveWorkspaceRoot(rootId);
+    const stat = await fsPromises.stat(root.abs).catch(() => null);
+    if (!stat || !stat.isDirectory()) throw new Error('Root not found');
+    return root;
+  }
+
+  async readWorkspace(rootId: string, relPath: string): Promise<WorkspaceReadResult> {
+    const root = await this.requireWorkspaceRoot(rootId);
+    if (!relPath) {
+      const depth = root.kind === 'openclaw' ? 2 : 4;
+      return {
+        root,
+        type: 'directory',
+        entries: await listWorkspaceDirectory(root.abs, '', depth, 5000),
+      };
+    }
+    const abs = resolveWorkspaceRelativePath(root.abs, relPath);
+    if (!abs) return { root, type: 'error', error: 'Invalid path' };
+    const stat = await fsPromises.stat(abs).catch(() => null);
+    if (!stat) return { root, type: 'error', error: 'Not found' };
+    if (stat.isDirectory()) {
+      return {
+        root,
+        type: 'directory',
+        path: relPath,
+        entries: await listWorkspaceDirectory(root.abs, relPath, 2, 5000),
+      };
+    }
+    if (!stat.isFile()) return { root, type: 'error', error: 'Unsupported file type' };
+    if (stat.size > WORKSPACE_MAX_FILE_BYTES) {
+      return { root, type: 'error', error: 'File too large' };
+    }
+    return {
+      root,
+      type: 'file',
+      path: relPath,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      content: await fsPromises.readFile(abs, 'utf-8'),
+    };
+  }
+
+  async createWorkspaceFile(
+    rootId: string,
+    relPath: string,
+    content: string,
+  ): Promise<WorkspaceMutationResult> {
+    const root = await this.requireWorkspaceRoot(rootId);
+    if (!root.writable) return { ok: false, error: 'Root is read-only' };
+    const abs = resolveWorkspaceRelativePath(root.abs, relPath);
+    if (!abs) return { ok: false, error: 'Invalid path' };
+    await fsPromises.mkdir(path.dirname(abs), { recursive: true });
+    await fsPromises.writeFile(abs, content, 'utf-8');
+    return { ok: true };
+  }
+
+  async updateWorkspaceFile(
+    rootId: string,
+    relPath: string,
+    content: string,
+  ): Promise<WorkspaceMutationResult> {
+    const root = await this.requireWorkspaceRoot(rootId);
+    if (!root.writable) return { ok: false, error: 'Root is read-only' };
+    const abs = resolveWorkspaceRelativePath(root.abs, relPath);
+    if (!abs) return { ok: false, error: 'Invalid path' };
+    const stat = await fsPromises.stat(abs).catch(() => null);
+    if (!stat || !stat.isFile()) return { ok: false, error: 'Not found' };
+    const backup = `${abs}.bak.${new Date().toISOString().replaceAll(':', '').replaceAll('.', '')}`;
+    await fsPromises.copyFile(abs, backup).catch(() => null);
+    const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.tmp.${Date.now()}`);
+    await fsPromises.writeFile(tmp, content, 'utf-8');
+    await fsPromises.rename(tmp, abs);
+    return { ok: true };
+  }
+
+  async deleteWorkspaceFile(rootId: string, relPath: string): Promise<WorkspaceMutationResult> {
+    const root = await this.requireWorkspaceRoot(rootId);
+    if (!root.writable) return { ok: false, error: 'Root is read-only' };
+    const abs = resolveWorkspaceRelativePath(root.abs, relPath);
+    if (!abs) return { ok: false, error: 'Invalid path' };
+    const stat = await fsPromises.stat(abs).catch(() => null);
+    if (!stat || !stat.isFile()) return { ok: false, error: 'Not found' };
+    await fsPromises.unlink(abs);
+    return { ok: true };
   }
 }
