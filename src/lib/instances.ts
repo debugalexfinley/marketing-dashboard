@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { lstatSync, statSync } from 'node:fs';
+import fs, { accessSync, constants, lstatSync, statSync } from 'node:fs';
 
 import type { BackendKind } from './backend/types';
 
@@ -14,6 +14,16 @@ export type HermesInstance = {
   cronUser?: string;
   kind?: BackendKind;
 };
+
+const DEFAULT_TENANTS_SCAN_TTL_MS = 30_000;
+const TENANT_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
+
+type TenantScanCacheEntry = {
+  scannedAt: number;
+  instances: HermesInstance[];
+};
+
+const tenantScanCache = new Map<string, TenantScanCacheEntry>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -83,6 +93,64 @@ function parseInstancesFromEnv(): HermesInstance[] | null {
   }
 }
 
+function getTenantsScanTtlMs(): number {
+  const raw = process.env.HERMES_TENANTS_SCAN_TTL_MS?.trim();
+  if (!raw) return DEFAULT_TENANTS_SCAN_TTL_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TENANTS_SCAN_TTL_MS;
+}
+
+function scanTenantInstances(root: string): HermesInstance[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+
+  const instances: HermesInstance[] = [];
+  for (const name of names) {
+    if (name.startsWith('.') || !TENANT_NAME_PATTERN.test(name)) continue;
+
+    const homeDir = path.join(root, name);
+    try {
+      if (lstatSync(homeDir).isSymbolicLink()) continue;
+      if (!statSync(homeDir).isDirectory()) continue;
+
+      const configPath = path.join(homeDir, 'config.yaml');
+      if (!statSync(configPath).isFile()) continue;
+      accessSync(configPath, constants.R_OK);
+    } catch {
+      continue;
+    }
+
+    instances.push({
+      id: `stagesnap:${name}`,
+      label: name,
+      openclawHome: '',
+      homeDir,
+      kind: 'hermes',
+    });
+  }
+  return instances;
+}
+
+function getDiscoveredTenantInstances(): HermesInstance[] {
+  const configuredRoot = process.env.HERMES_TENANTS_ROOT?.trim();
+  if (!configuredRoot) return [];
+
+  const root = path.resolve(expandHome(configuredRoot));
+  const now = Date.now();
+  const cached = tenantScanCache.get(root);
+  if (cached && now - cached.scannedAt < getTenantsScanTtlMs()) {
+    return cached.instances;
+  }
+
+  const instances = scanTenantInstances(root);
+  tenantScanCache.set(root, { scannedAt: now, instances });
+  return instances;
+}
+
 export function getDefaultInstanceId(): string {
   const v = process.env.HERMES_DEFAULT_INSTANCE?.trim();
   return v ? v : 'default';
@@ -90,22 +158,37 @@ export function getDefaultInstanceId(): string {
 
 export function getInstances(): HermesInstance[] {
   const fromEnv = parseInstancesFromEnv();
-  if (fromEnv) return fromEnv;
+  const configured = fromEnv ?? (() => {
+    const defaultId = getDefaultInstanceId();
+    const home =
+      process.env.HERMES_OPENCLAW_HOME?.trim() ||
+      process.env.OPENCLAW_HOME?.trim() ||
+      path.join(os.homedir(), '.openclaw');
 
-  const defaultId = getDefaultInstanceId();
-  const home =
-    process.env.HERMES_OPENCLAW_HOME?.trim() ||
-    process.env.OPENCLAW_HOME?.trim() ||
-    path.join(os.homedir(), '.openclaw');
+    return [
+      {
+        id: defaultId,
+        label: 'Default',
+        openclawHome: path.resolve(expandHome(home)),
+        kind: 'openclaw' as const,
+        cronUser: process.env.HERMES_CRON_USER?.trim() || undefined,
+      },
+    ];
+  })();
+
+  const discovered = getDiscoveredTenantInstances();
+  const configuredIds = new Set(configured.map((instance) => instance.id));
+  const warnedIds = new Set<string>();
+  for (const instance of discovered) {
+    if (configuredIds.has(instance.id) && !warnedIds.has(instance.id)) {
+      console.warn(`Tenant instance id collision: ${instance.id}`);
+      warnedIds.add(instance.id);
+    }
+  }
 
   return [
-    {
-      id: defaultId,
-      label: 'Default',
-      openclawHome: path.resolve(expandHome(home)),
-      kind: 'openclaw',
-      cronUser: process.env.HERMES_CRON_USER?.trim() || undefined,
-    },
+    ...discovered.filter((instance) => !configuredIds.has(instance.id)),
+    ...configured,
   ];
 }
 
