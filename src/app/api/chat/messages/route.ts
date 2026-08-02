@@ -20,10 +20,6 @@ interface MessageRow {
   created_at: number;
 }
 
-function getInstanceId(req: NextRequest): string | null {
-  return req.nextUrl.searchParams.get('instance') || req.nextUrl.searchParams.get('namespace');
-}
-
 export async function GET(req: NextRequest) {
   const auth = requireApiUser(req as Request);
   if (auth) return auth;
@@ -63,7 +59,7 @@ export async function POST(req: NextRequest) {
   try {
     const actor = requireUser(req as Request);
     const db = getDb();
-    const backend = resolveBackend(getInstanceId(req) ?? undefined);
+    const backend = resolveBackend();
     const body = await req.json();
     const from = (typeof actor?.username === 'string' && actor.username.trim()) ? actor.username.trim() : 'operator';
     const to = body.to ? (body.to as string).trim() : null;

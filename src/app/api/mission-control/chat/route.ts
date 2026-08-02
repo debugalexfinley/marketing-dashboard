@@ -43,10 +43,6 @@ function parseBridgeConversation(conversationId: string): { from_agent: string; 
   return { from_agent: match[1], to_agent: match[2] };
 }
 
-function getInstanceId(request: NextRequest): string | null {
-  return request.nextUrl.searchParams.get('instance') || request.nextUrl.searchParams.get('namespace');
-}
-
 export async function GET(request: NextRequest) {
   const auth = requireApiAdmin(request as Request);
   if (auth) return auth;
@@ -57,7 +53,7 @@ export async function GET(request: NextRequest) {
     const toAgent = request.nextUrl.searchParams.get('to_agent') || undefined;
     const limit = Math.min(200, Math.max(1, Number(request.nextUrl.searchParams.get('limit') || 100)));
     const db = getDb();
-    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const backend = resolveBackend();
     const agents = (await backend.listConfiguredAgents()).map((agent) => agent.id);
 
     if (listOnly) {
@@ -123,7 +119,7 @@ export async function POST(request: NextRequest) {
 
     const fromAgent = body.from_agent;
     const toAgent = body.to_agent;
-    const backend = resolveBackend(getInstanceId(request) ?? undefined);
+    const backend = resolveBackend();
     const agents = (await backend.listConfiguredAgents()).map((agent) => agent.id);
     if (mode === 'agent_bridge') {
       if (!isAgentId(fromAgent, agents) || !isAgentId(toAgent, agents)) {
