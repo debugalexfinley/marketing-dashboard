@@ -483,3 +483,285 @@ underlying bug is fixed.
 - The `-1` "missing schema_version table" sentinel is arbitrary but
   documented and tested; if a future contributor changes it, both the
   production check and the new test must move together.
+
+## Fix pass (post-review)
+
+Commit `05cbae7` completes the contract in `spec-phase2-fixes.md`. This section
+supersedes the earlier phase-2 audit statements that these methods remained
+`call3` stubs or needed to be deferred to phase 3.
+
+### Finding-to-fix mapping
+
+#### B1 — previously stubbed methods
+
+- `writeCronJobs`: now enforces the existing cron-write guard, diffs requested
+  jobs against `jobs.json`, and invokes Hermes `cron remove`, `cron edit`,
+  `cron pause`/`resume`, and `cron create` operations as needed. It never
+  writes `jobs.json` directly. After mutation it re-reads the file and verifies
+  removals and the complete requested state of updated and created jobs.
+- `upsertCronJob`: now enforces the cron-write guard, creates a job when no
+  matching ID exists or edits the existing job, then re-reads `jobs.json` and
+  verifies the resulting job fields and enabled state.
+- `toggleCronJob`: now enforces the cron-write guard, invokes `cron resume` or
+  `cron pause`, then re-reads `jobs.json` and verifies that the requested state
+  was persisted.
+- `sendAgentMessage`: now runs Hermes `-z` with the message and a unique
+  `--usage-file` path, applies a 10-minute timeout, parses the usage JSON, and
+  returns stdout as `response`, the reported `session_id` as `sessionId`, the
+  full usage object as `details`, and success from the process exit code. The
+  temporary usage file is removed in `finally`.
+- `sendOrchestratorMessage`: now aliases the same `sendAgentMessage` path,
+  because Hermes has no separate orchestrator messaging concept.
+- `validateConfig`: now runs `hermes doctor` with stdin ignored, parses
+  `✓`/`⚠`/`✗` lines into warning and error arrays, falls back to the exit code
+  when no marked lines can be parsed, and caches the result for 60 seconds.
+- `writeHealthPolicy`: Hermes has no health-policy write equivalent. The method
+  now calls the shared `assertPolicyWriteAllowed()` guard, producing the same
+  typed route-compatible disabled-write error as OpenClaw while policy writes
+  are disabled; if explicitly enabled, it throws an explicit unsupported
+  operation error rather than pretending to persist a policy.
+- `createWorkspaceFile`: now enforces the shared workspace-write guard,
+  allowlisted relative paths, traversal containment, writable-root resolution,
+  and the maximum UTF-8 byte size; it creates parent directories and writes the
+  file beneath the resolved root.
+- `updateWorkspaceFile`: applies the same guards and size cap, requires an
+  existing regular file, makes a best-effort timestamped backup, writes through
+  a sibling temporary file, and atomically renames it over the destination.
+- `deleteWorkspaceFile`: applies the same guards, requires an existing regular
+  file beneath the resolved root, and deletes it.
+
+The `call3` helper was deleted completely.
+
+#### B2 — session cursor unit mismatch
+
+`readSessions` now obtains `COALESCE(MAX(messages.id), 0)` for every session
+and uses that rowid as `SessionFileRef.size`. `readSessionEntries` continues to
+query `messages.id > fromOffset` and return the last consumed rowid as
+`nextOffset`. Both sides of the sync skip condition are therefore in rowid
+units, and the two-pass regression test proves that a newly inserted message is
+imported once rather than permanently skipped or duplicated.
+
+#### B3 — workspace secret exposure
+
+Every workspace-root source (`project_folders`, `discovered_repos`, session
+`cwd`, and session `git_repo_root`) is realpath-normalized and excluded when it
+is the Hermes home or an ancestor or descendant of the Hermes home. Direct
+single-file reads now apply the same hidden-entry predicate used by directory
+listings, returning `Not found` for dotfiles, `auth.json`, `*.env`,
+`config.yaml`, `state.db*`, `token*`, `*credential*`, and the other filtered
+directory segments. All roots that survive the Hermes-home exclusion are
+reported writable and remain subject to the workspace mutation guards.
+
+#### N1 — cron-to-session join bound
+
+Cron cost attribution now selects only an exact `cron_<jobId>_` session whose
+start time is within ±10 minutes of the execution's `claimed_at`. A nearest
+session outside that window contributes no session ID, token data, or cost.
+
+#### N2 — argv-injection scaffolding
+
+The fixture stub records each argv element, and tests pass adversarial job
+names, prompts, and messages containing semicolons, backticks, `$(id)`, single
+and double quotes, and newlines. The tests assert that each value reaches the
+stub unchanged as exactly one argv element. The string-concatenation revert
+demo below proves these tests fail if argv boundaries are lost.
+
+### CLI argv safety
+
+All Hermes invocations go through `spawn(binary, args, { shell: false, ... })`
+with an argv array. User-controlled schedules, prompts, names, and messages are
+individual array elements; no command is built through string concatenation or
+shell interpolation. The adapter selects the Hermes home through the
+`HERMES_HOME` child-process environment variable and never passes `-p` or
+`--profile`. This is intentional: the configured `homeDir` is the isolation
+boundary, including for a default/root Hermes home, and the stub strips
+`-p`/`--profile` defensively without requiring the adapter to emit either flag.
+
+### Acceptance checks
+
+#### Check 1 — typecheck and full test suite: PASS
+
+```text
+> hermes-dashboard@0.2.0 typecheck
+> tsc --noEmit
+(clean, exit 0)
+
+ℹ tests 71
+ℹ suites 0
+ℹ pass 71
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+#### Check 2 — no `call3` or deferred-implementation markers: PASS
+
+```text
+$ grep -rn "call3\|implemented in call" src/lib/backend/
+(no output, exit 1 = zero matches)
+```
+
+#### Check 3 — OpenClaw and Hermes goldens: PASS
+
+```text
+$ node feature-research/hermes-port/golden/capture.mjs --check
+Golden check passed: 19 JSON files are byte-identical.
+
+$ node feature-research/hermes-port/golden/capture.mjs --backend hermes --check
+(run 1) Golden check passed: 19 JSON files are byte-identical.
+(run 2) Golden check passed: 19 JSON files are byte-identical.
+```
+
+`feature-research/hermes-port/golden/baseline-hermes/api-agents-workspace-roots.json`
+was regenerated because all three workspace roots' `writable` field changed
+from `false` to `true`. This is the intentional consequence of implementing
+workspace writes and B3 root curation: every root that survives the Hermes-home
+exclusion is writable. The complete baseline diff was:
+
+```diff
+13c13
+<         "writable": false
+---
+>         "writable": true
+19c19
+<         "writable": false
+---
+>         "writable": true
+25c25
+<         "writable": false
+---
+>         "writable": true
+```
+
+No other baseline file changed, confirmed with `diff -rq` against a pre-change
+backup.
+
+#### Check 4 — live read-only smoke: PASS
+
+Run against `/Users/alexfinley/.hermes` with reads only: no cron mutations, no
+`-z`, and no writes.
+
+```text
+listAgents: [
+  {
+    "id": ".hermes", "name": ".hermes", "emoji": "◆",
+    "role": "Hermes Agent Profile", "description": "",
+    "model": "grok-4.5", "fallbacks": [], "tools": [], "skills": [],
+    "cronJobs": [], "workspace": "/Users/alexfinley/.hermes",
+    "gatewayRunning": true, "distribution": null
+  }
+]
+listCronJobs: count= 10 deliveryErrors= 7
+readSessions: count= 126
+readHealthReport(gateway): { heartbeat: {pid:98249,...running...},
+  lifecycle: {phase:"running",pid:98249,...},
+  platforms: {..., gateway_state:"running", platforms:{telegram:{state:"connected",...},discord:{state:"connected",...}}} }
+```
+
+This matches the expected shape from `spec-phase2.md` acceptance check 6:
+default profile data with model `grok-4.5`, at least five cron jobs including
+delivery errors, at least 50 sessions, and a running gateway. Every threshold
+was exceeded: 10 jobs, 7 with delivery errors, and 126 sessions.
+
+#### Check 5 — API hard boundary: PASS
+
+```text
+$ git diff hermes-port-phase1 -- src/app/api
+(empty output — hard boundary held)
+```
+
+#### Check 6 — anti-vacuity revert demonstrations: PASS
+
+B2 with `Buffer.byteLength(...)` temporarily restored:
+
+```text
+✖ session refs and entry offsets stay in rowid units across two sync passes
+ℹ tests 1
+ℹ pass 0
+ℹ fail 1
+AssertionError [ERR_ASSERTION]:
++ actual - expected
++ []
+- [ '1006' ]
+```
+
+After restoring the rowid fix:
+
+```text
+✔ session refs and entry offsets stay in rowid units across two sync passes
+ℹ tests 1 / pass 1 / fail 0
+```
+
+B3 with root-overlap filtering temporarily removed:
+
+```text
+✖ workspace roots exclude the Hermes home and descendants from every root source
+ℹ tests 1 / pass 0 / fail 1
++ actual included:
++ .../workspace-curation/hermes-home
++ .../workspace-curation/hermes-home/workspace
+  .../workspace-curation/safe-workspace
+```
+
+After restoring root-overlap filtering:
+
+```text
+✔ workspace roots exclude the Hermes home and descendants from every root source
+ℹ tests 1 / pass 1 / fail 0
+```
+
+N2 with `runHermesCli` spawn simulated as `[args.join(' ')]` (string
+concatenation instead of an argv array):
+
+```text
+✖ N2 argv integrity: writeCronJobs create preserves adversarial name and prompt
+✖ N2 argv integrity: upsertCronJob create preserves adversarial name and prompt
+✖ N2 argv integrity: cron edit preserves adversarial name and prompt changes
+✖ N2 argv integrity: sendAgentMessage preserves an adversarial message
+ℹ tests 4 / pass 0 / fail 4
+Error: unhandled stub subcommand: cron create every 15m prompt ; rm -rf / `id` $(id) 'single' "double"
+next-prompt --name name ; rm -rf / `id` $(id) 'single' "double"
+next-name
+(etc — the concatenated form broke the stub's own argv parsing, proving the
+adversarial content would have corrupted a real shell invocation too)
+```
+
+After restoring argv-array spawning:
+
+```text
+✔ N2 argv integrity: writeCronJobs create preserves adversarial name and prompt
+✔ N2 argv integrity: upsertCronJob create preserves adversarial name and prompt
+✔ N2 argv integrity: cron edit preserves adversarial name and prompt changes
+✔ N2 argv integrity: sendAgentMessage preserves an adversarial message
+ℹ tests 4 / pass 4 / fail 0
+```
+
+### Deviations and deferred follow-up
+
+- `sendAgentMessage` accepts the optional `sessionId`, but Hermes `-z` has no
+  documented or verified resume flag. The parameter is therefore currently
+  ignored and a plain new-session `-z` invocation is run. Resume semantics are
+  a known limitation; no unverified flag was invented.
+- The original fix spec described `-p <profile>` CLI selection. The delivered
+  adapter instead always sets `HERMES_HOME` and never passes `-p`/`--profile`,
+  as documented in the argv-safety section above.
+- Two additional fixes from the second review were folded into this pass and
+  are recorded in `spec-phase2-fixes-addendum.md`: (1) the stub CLI now strips
+  `-p`/`--profile` and refuses to run unless its resolved Hermes home is inside
+  the OS temporary directory, preventing fixture mistakes from reaching a live
+  home; and (2) fixture/stub `jobs.json.updated_at` values now use the ISO-8601
+  string format emitted by real Hermes rather than a numeric epoch. The adapter
+  continues to normalize both string and numeric inputs. Only these two
+  addendum items were completed in this pass; all remaining addendum findings
+  are out of scope here and deferred to a follow-up.
+
+### Corrected phase-2 delivery statement
+
+Phase 2 now delivers the complete `spec-phase2-fixes.md` scope: all ten B1
+methods have real implementations or the specified explicit unsupported
+behavior, B2's session cursor units are corrected, B3's root curation and
+direct-read secret filtering are active, N1's ±10-minute attribution bound is
+active, and N2's argv-integrity regression coverage is active. Nothing in
+`spec-phase2-fixes.md` B1, B2, B3, N1, or N2 remains stubbed or deferred. All
+six acceptance checks passed.
