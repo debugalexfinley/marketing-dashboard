@@ -380,13 +380,13 @@ test('every optional-store read has a non-throwing bare-home empty result', asyn
   });
 });
 
-test('existing state.db with unknown user_version fails loudly and records the version', async () => {
+test('existing state.db with unsupported schema_version fails loudly and records the version', async () => {
   const homeDir = path.join(tempRoot, 'schema-999');
   fs.mkdirSync(homeDir, { recursive: true });
   fs.copyFileSync(path.join(fullDir, 'state.db'), path.join(homeDir, 'state.db'));
   fs.copyFileSync(path.join(fullDir, 'config.yaml'), path.join(homeDir, 'config.yaml'));
   const db = new Database(path.join(homeDir, 'state.db'));
-  db.pragma('user_version = 999');
+  db.prepare('UPDATE schema_version SET version = 999').run();
   db.close();
   const backend = new HermesAgentBackend(instance('schema-999', homeDir));
 
@@ -395,6 +395,24 @@ test('existing state.db with unknown user_version fails loudly and records the v
     (error) => error instanceof HermesSchemaVersionError &&
       error.seenVersion === 999 &&
       error.message.includes('999'),
+  );
+});
+
+test('existing state.db without schema_version fails loudly with the missing sentinel', async () => {
+  const homeDir = path.join(tempRoot, 'schema-missing');
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.copyFileSync(path.join(fullDir, 'state.db'), path.join(homeDir, 'state.db'));
+  fs.copyFileSync(path.join(fullDir, 'config.yaml'), path.join(homeDir, 'config.yaml'));
+  const db = new Database(path.join(homeDir, 'state.db'));
+  db.exec('DROP TABLE schema_version');
+  db.close();
+  const backend = new HermesAgentBackend(instance('schema-missing', homeDir));
+
+  await assert.rejects(
+    backend.readSessions('schema-missing'),
+    (error) => error instanceof HermesSchemaVersionError &&
+      error.seenVersion === -1 &&
+      error.message.includes('-1'),
   );
 });
 

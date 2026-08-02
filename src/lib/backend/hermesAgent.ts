@@ -31,7 +31,8 @@ import type {
   WorkspaceRoot,
 } from './types';
 
-export const HERMES_STATE_SCHEMA_VERSION = 7;
+// Observed in a real Hermes install's schema_version table.
+export const SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION = 23;
 export const CRON_SESSION_ID_PREFIX = 'cron_';
 
 const GATEWAY_FRESHNESS_MS = 120_000;
@@ -433,8 +434,22 @@ export class HermesAgentBackend implements AgentBackend {
     if (!(await fileExists(filePath))) return empty;
     const db = new Database(filePath, { readonly: true });
     try {
-      const version = Number(db.pragma('user_version', { simple: true }));
-      if (version !== HERMES_STATE_SCHEMA_VERSION) throw new HermesSchemaVersionError(version);
+      let version = -1;
+      try {
+        const row = db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as
+          | { version: number | null }
+          | undefined;
+        if (row?.version != null) version = Number(row.version);
+      } catch {
+        version = -1;
+      }
+      if (
+        !Number.isInteger(version) ||
+        version < 0 ||
+        version > SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION
+      ) {
+        throw new HermesSchemaVersionError(version);
+      }
       return operation(db);
     } finally {
       db.close();

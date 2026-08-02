@@ -322,3 +322,164 @@ committing verified-good work now is safer than leaving it uncommitted.
 This commit is therefore made as a `wip:` checkpoint with acceptance check 6
 explicitly called out as failing and requiring a phase-3 fix — see the beads
 follow-up this should generate.
+
+## 7. Schema fix (spec-phase2-schemafix.md)
+
+Implemented by codex-implementer (gpt-5.5, `codex exec`) against
+`feature-research/hermes-port/spec-phase2-schemafix.md`, then independently
+verified by the orchestrator wrapper. Codex's own `--check` run for the golden
+checks failed inside its sandbox (`listen EPERM: operation not permitted
+127.0.0.1` — the sandbox's `sandbox_workspace_write.network_access = false`
+blocks even loopback binds), so all four acceptance checks below were run
+directly by the orchestrator outside the codex sandbox, against the actual
+repo state codex left behind.
+
+### Real table layout observed (live install)
+
+```
+$ sqlite3 -readonly "file:/Users/alexfinley/.hermes/state.db?mode=ro" ".schema schema_version" "SELECT * FROM schema_version;"
+CREATE TABLE schema_version (
+    version INTEGER NOT NULL
+);
+23
+```
+
+Single column (`version`), single row, value `23`. Confirms the phase-2
+addendum's finding: `PRAGMA user_version` is not used by real Hermes installs
+(always 0); the real version lives in this table.
+
+### Files changed
+
+- `src/lib/backend/hermesAgent.ts` — replaced the `db.pragma('user_version', …)`
+  read in `withStateDb` with `SELECT MAX(version) AS version FROM schema_version`
+  (wrapped in try/catch so a missing/unreadable table is treated as version
+  `-1`, the "missing" sentinel, rather than an uncaught SQLite error). Renamed
+  `HERMES_STATE_SCHEMA_VERSION` (was `7`, a fixture-only guess) to
+  `SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION = 23`, the observed live value.
+  Changed the accept rule from exact-equality to an upper bound: any
+  `version` that is a non-negative integer `<= SUPPORTED_MAX_...` is accepted;
+  a missing table (`-1`), a negative/non-integer read, or any version above
+  `23` still throws the existing typed `HermesSchemaVersionError(version)`.
+  This matches the spec's "SUPPORTED_MAX" language and keeps the loud-fail
+  contract for genuinely newer/unknown schemas while not hard-failing on
+  every live install the moment Hermes ships a schema `<= 23` that isn't
+  exactly `23`.
+- `feature-research/hermes-port/fixtures/gen-hermes-home.mjs` — dropped the
+  `PRAGMA user_version = …` call in `createStateDatabase`; now creates
+  `schema_version(version INTEGER NOT NULL)` and inserts one row with
+  `SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION` (renamed from
+  `HERMES_STATE_SCHEMA_VERSION`, value updated `7` → `23`), matching the real
+  table shape and value.
+- `src/lib/backend/hermesAgent.test.ts` — renamed and updated the mismatch
+  test (`existing state.db with unknown user_version …` →
+  `existing state.db with unsupported schema_version …`); it now does
+  `UPDATE schema_version SET version = 999` instead of the pragma, still
+  asserting `seenVersion === 999`. Added a new test,
+  `existing state.db without schema_version fails loudly with the missing
+  sentinel`, which drops the `schema_version` table entirely and asserts
+  `readSessions` still rejects with `HermesSchemaVersionError` and
+  `seenVersion === -1`. Codex verified this test is not vacuous: it
+  temporarily short-circuited the guard (`if (false && (...))`), reran the
+  focused test and got a real failure (`Missing expected rejection`, 0
+  pass/1 fail), then restored the guard and reran to confirm it passes
+  again — both runs are in the raw codex transcript.
+- `feature-research/hermes-port/golden/baseline-hermes/*` — untouched; both
+  golden checks below are byte-identical against the existing baseline, no
+  regeneration needed.
+
+### Acceptance checks (all four independently run by the orchestrator, not just codex's self-report)
+
+**1. `pnpm typecheck` + `pnpm test`** — clean / all green.
+
+```
+> tsc --noEmit
+(no output — clean)
+
+> node --import tsx --test --test-concurrency=1 "src/lib/**/*.test.ts"
+...
+✔ existing state.db with unsupported schema_version fails loudly and records the version
+✔ existing state.db without schema_version fails loudly with the missing sentinel
+...
+ℹ tests 63
+ℹ pass 63
+ℹ fail 0
+```
+
+Anti-vacuity re-check (guard disabled → focused test fails; guard restored →
+passes), reproduced live by codex mid-session:
+
+```
+$ node --import tsx --test ... --test-name-pattern='existing state.db without schema_version' ...
+[guard disabled] ✖ ... AssertionError: Missing expected rejection  (0 pass, 1 fail)
+[guard restored]  ✔ ... (1 pass, 0 fail)
+```
+
+**2. Hermes golden `--backend hermes --check`, run twice:**
+
+```
+$ node feature-research/hermes-port/golden/capture.mjs --backend hermes --check
+...
+Golden check passed: 19 JSON files are byte-identical.
+
+$ node feature-research/hermes-port/golden/capture.mjs --backend hermes --check
+...
+Golden check passed: 19 JSON files are byte-identical.
+```
+
+**3. OpenClaw golden `--check`, untouched:**
+
+```
+$ node feature-research/hermes-port/golden/capture.mjs --check
+...
+Golden check passed: 19 JSON files are byte-identical.
+```
+
+**4. LIVE READ-ONLY SMOKE** — now fully passes (previously the blocking
+failure in check 6 of the original phase-2 pass). Run via a throwaway
+`node --import tsx --test` file (not committed, deleted after the run)
+constructing `HermesAgentBackend({ homeDir: '/Users/alexfinley/.hermes',
+kind: 'hermes', ... })` and calling `readSessions('default')` then
+`readSessionUsage('default')` — both read-only (`new Database(filePath, {
+readonly: true })`), no CLI calls, no mutation of `/Users/alexfinley/.hermes`:
+
+```
+SESSION_COUNT: 126
+TOKEN_TOTALS: {"tokens_today":0,"tokens_week":597828,"cost_today":0,"cost_week":0,
+"input_tokens":4773260,"output_tokens":338816,"cache_read_tokens":43382656,
+"cache_write_tokens":0,"reasoning_tokens":138032,"estimated_cost_usd":0,
+"actual_cost_usd":null,"cost_status":"unknown","cost_source":"none"}
+```
+
+126 sessions (>= 50 required), real non-zero token totals. Check 6's
+underlying bug is fixed.
+
+### Deviations from the written spec
+
+- Accept semantics chosen as an upper bound (`version <= SUPPORTED_MAX`)
+  rather than exact equality, per the spec's own reasoning ("SUPPORTED_MAX"
+  implies a ceiling, not a pin) — called out explicitly as the spec invited.
+- Token totals for the live smoke came from `readSessionUsage`, not fields
+  on the `SessionFileRef` list returned by `readSessions` (that type only
+  carries path/name/mtime/size, not usage) — `readSessionUsage` is the
+  adapter's existing purpose-built method for aggregate token/cost totals
+  and was the natural source for "token totals" in check 4.
+- Codex's own in-sandbox golden-check attempt failed with a sandbox network
+  EPERM (unrelated to the code change — `sandbox_workspace_write.network_access
+  = false` blocks the loopback listen the Next.js dev/prod server needs for
+  the golden capture script). All four acceptance checks were therefore
+  re-run directly by the orchestrator outside the codex sandbox against the
+  same repo state; this is noted as a process deviation, not a code
+  deviation.
+
+### Open risks / notes for phase 3
+
+- `SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION` (23) is a snapshot of one live
+  install's schema version at the time of this fix; if Hermes ships a schema
+  version between the previous fixture guess (7) and today's constant that
+  actually changes table shapes the adapter reads, only the version number
+  changes — this fix does not add per-version compatibility shims. Future
+  schema bumps still need this constant raised (and ideally a smoke re-run)
+  when Hermes updates the live install's schema.
+- The `-1` "missing schema_version table" sentinel is arbitrary but
+  documented and tested; if a future contributor changes it, both the
+  production check and the new test must move together.

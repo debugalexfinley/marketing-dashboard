@@ -3,7 +3,8 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
-export const HERMES_STATE_SCHEMA_VERSION = 7;
+// Keep in sync with SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION in hermesAgent.ts.
+export const SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION = 23;
 
 const FIXED_UPDATED_AT_MS = 1_785_625_200_000;
 const CRON_SESSION_JOB_ID = 'a9ce2d311889';
@@ -49,8 +50,12 @@ async function writeJson(filePath, value) {
 
 function createStateDatabase(filePath) {
   const db = new Database(filePath);
-  db.pragma(`user_version = ${HERMES_STATE_SCHEMA_VERSION}`);
   db.exec(`
+    CREATE TABLE schema_version (
+      version INTEGER NOT NULL
+    );
+    INSERT INTO schema_version (version)
+    VALUES (${SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION});
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
