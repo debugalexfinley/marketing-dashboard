@@ -1,0 +1,36 @@
+{
+  "route": "/api/agents",
+  "request": "/api/agents?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": [
+    {
+      "id": "fixture-profile",
+      "name": "fixture-profile",
+      "emoji": "◆",
+      "role": "Hermes Agent Profile",
+      "description": "Synthetic full Hermes profile for adapter tests.",
+      "model": "grok-4.5",
+      "fallbacks": [],
+      "tools": [],
+      "skills": [],
+      "cronJobs": [],
+      "workspace": "<STATE_PATH>/hermes-home/full",
+      "gatewayRunning": false,
+      "distribution": null,
+      "status": "planned",
+      "stats": {
+        "actions_today": 0,
+        "actions_week": 0,
+        "tokens_today": 0,
+        "tokens_week": 5473,
+        "cost_today": 0,
+        "cost_week": 0.0351,
+        "last_action": null,
+        "last_action_at": null,
+        "top_skills": []
+      },
+      "recent_activity": []
+    }
+  ]
+}

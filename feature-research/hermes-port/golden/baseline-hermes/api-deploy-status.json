@@ -1,0 +1,27 @@
+{
+  "route": "/api/deploy-status",
+  "request": "/api/deploy-status?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "service": {
+      "name": "",
+      "state": "unavailable"
+    },
+    "deploy": {
+      "script_path": null,
+      "lock_file": "",
+      "lock_exists": false,
+      "running_pids": []
+    },
+    "openclaw": {
+      "bin": "",
+      "config_validate": {
+        "available": false,
+        "ok": false
+      }
+    },
+    "latest_log": null
+  }
+}

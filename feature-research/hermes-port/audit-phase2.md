@@ -1,0 +1,324 @@
+# Hermes port phase 2 audit
+
+Adapter work was delivered previously in commit `a13bc75` and independently verified at 62/62 tests. This audit covers the remaining persona rename, Hermes golden capture/baseline work, and final acceptance checks.
+
+## 1. Files changed
+
+- `src/lib/backend/openclaw.ts` — renamed only the `DEFAULT_STATIC_META.hermes` display name from `Hermes` to `Maven`.
+- `src/lib/backend/hermesAgent.ts` — retained the pre-existing uncommitted lint/type cleanup (`const frame`, explicit unused-parameter consumption, and explicit workspace-root projection); no adapter behavior was added in this pass.
+- `feature-research/hermes-port/golden/capture.mjs` — added `--backend hermes`, deterministic Hermes-home generation, Hermes instance wiring, backend-specific fixture queries, and backend-specific baseline selection.
+- `feature-research/hermes-port/golden/baseline-hermes/api-agents-workspace-roots.json` — Hermes workspace-root golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-agents-workspace.json` — Hermes missing-workspace-file golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-agents.json` — Hermes agents golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-automations.json` — Hermes automations golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-chat-messages.json` — Hermes chat-messages golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-chat-sync-sessions.json` — Hermes session-sync golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-cron-jobs.json` — Hermes cron-jobs golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-cron-runs.json` — Hermes cron-runs golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-cron.json` — Hermes cron golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-deploy-status.json` — Hermes deploy-status golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-hud.json` — Hermes HUD golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-instances.json` — Hermes instances golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-memory-alert-policy.json` — Hermes memory-alert-policy golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-memory-alerts.json` — Hermes memory-alerts empty/404 golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-memory-drift.json` — Hermes memory-drift empty/404 golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-memory-effect.json` — Hermes memory-effect golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-memory-health.json` — Hermes memory-health empty/404 golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-memory-policy.json` — Hermes memory-policy golden.
+- `feature-research/hermes-port/golden/baseline-hermes/api-mission-control-chat.json` — Hermes mission-control chat golden.
+- `feature-research/hermes-port/audit-phase2.md` — this audit.
+
+No OpenClaw baseline JSON changed. `package.json`, `src/lib/agent-config.ts`, route files, and components were not touched.
+
+## 2. Per-file changes and rationale
+
+### `src/lib/backend/openclaw.ts`
+
+The written spec incorrectly lists and requires the rename in `src/lib/agent-config.ts`:
+
+> `- src/lib/agent-config.ts      (persona rename ONLY — see F-rename)`
+
+It also says:
+
+> `In agent-config.ts only: static persona display name "Hermes — Marketing Engine" → "Maven — Marketing Engine"`
+
+Repository search confirmed that `agent-config.ts` contains no such persona string. The actual display metadata is `DEFAULT_STATIC_META.hermes` in `src/lib/backend/openclaw.ts`. Under the authorized file-boundary correction, only its `name` line changed; the `hermes` ID/key, emoji, role, description, action mappings, platform branding, and components are unchanged.
+
+```diff
+   hermes: {
+-    name: 'Hermes',
++    name: 'Maven',
+```
+
+### `feature-research/hermes-port/golden/capture.mjs`
+
+- Added optional `--backend hermes`; omitted backend still resolves to `openclaw` and preserves `--check`/`--out` behavior.
+- Imports and invokes `genHermesHome()` beneath each run's scratch directory and uses its `fullDir`.
+- Sets `HERMES_OPENCLAW_INSTANCES` to one `kind: "hermes"` instance with the exact parsed fields: `id`, `label`, `kind`, `openclawHome`, `homeDir`, `profile`, and `hermesBin`.
+- Retains backend-agnostic authentication, state, and safety environment variables.
+- Keeps exactly the same 19 GET-only route paths; no POST/mutation handler is called.
+- Selects `baseline-hermes/` only for Hermes checks and leaves `baseline/` as the default.
+
+### `feature-research/hermes-port/golden/baseline-hermes/*.json`
+
+Added 19 normalized captures, one for each existing OpenClaw golden route. All responses are non-5xx. The absent synthetic workspace file intentionally produces a deterministic 404 JSON response. The three unsupported Hermes memory-health routes likewise produce deterministic 404 responses.
+
+### `src/lib/backend/hermesAgent.ts`
+
+The uncommitted cleanup present before this task was preserved exactly as requested. Inspection confirmed `state.db`, `projects.db`, and `executions.db` are opened through `better-sqlite3` with `{ readonly: true }`. No new method or adapter behavior was implemented.
+
+## 3. F-rename OpenClaw golden diff
+
+There were no mismatch lines. The default OpenClaw golden check remained byte-identical after the rename, so `golden/baseline/*.json` was not regenerated. Exact terminal tail:
+
+```text
+Golden check passed: 19 JSON files are byte-identical.
+```
+
+## 4. Acceptance check results
+
+### 1. Typecheck — PASS
+
+Command and complete output:
+
+```text
+$ pnpm typecheck
+
+> hermes-dashboard@0.2.0 typecheck /Users/alexfinley/Documents/GitHub/marketing-dashboard
+> tsc --noEmit
+```
+
+### 2. Unit tests — PASS (62/62)
+
+Command and complete final-run output:
+
+```text
+$ pnpm test
+
+> hermes-dashboard@0.2.0 test /Users/alexfinley/Documents/GitHub/marketing-dashboard
+> node --import tsx --test --test-concurrency=1 "src/lib/**/*.test.ts"
+
+✔ resolveWorkspacePath blocks absolute and traversal paths (0.395167ms)
+✔ isAllowedWorkspaceWritePath allows safe text files and blocks sensitive paths (0.12ms)
+✔ clampDays clamps and defaults (0.385958ms)
+✔ isSafeExternalUrl allows http/https only (1.552208ms)
+✔ formatDurationSeconds formats human-friendly (0.081541ms)
+✔ computeSocialAnalytics sums correctly (0.306292ms)
+✔ seedAdmin requires AUTH_USER and AUTH_PASS when users table is empty (55.15225ms)
+✔ seedAdmin creates initial admin and authenticate succeeds (55.5705ms)
+✔ session lifecycle validates and invalidates correctly (48.303459ms)
+✔ requireUser throws on invalid session cookie (47.263167ms)
+✔ x-api-key auth only works when API_KEY is configured and matches (1.633958ms)
+✔ reviewing login requests clears stale pending error metadata (1.158459ms)
+✔ minimal YAML parser handles the fixture maps, scalars, and mapping lists (70.80525ms)
+✔ agents and two-tier model routing use only whitelisted fixture config (5.038333ms)
+✔ fresh heartbeat positively marks a generated profile as running (29.359042ms)
+✔ cron jobs preserve unknown fields, normalize timestamps, and surface delivery errors (2.990458ms)
+✔ cron executions normalize offset timestamps and enrich the guarded session match (7.353542ms)
+✔ cron session join guard is anchored to the exact prefix (0.393042ms)
+✔ cron log reads newest output first and returns interface empty cases (2.147083ms)
+✔ sessions fabricate stable refs, page by message rowid, and normalize epoch seconds (3.2525ms)
+✔ session usage aggregates model rows and lets unknown cost status win (1.638375ms)
+✔ gateway health combines optional files and normalizes UTC ISO timestamps (2.150834ms)
+✔ inert Hermes-only gaps return explicit empty interface shapes (0.733583ms)
+✔ backend resolver constructs and caches HermesAgentBackend instances (0.420584ms)
+✔ workspace roots union projects and session paths with guarded read-only resolution (55.472417ms)
+✔ workspace browsing reads files beneath a real temporary project root (7.350958ms)
+✔ every optional-store read has a non-throwing bare-home empty result (11.001792ms)
+✔ existing state.db with unknown user_version fails loudly and records the version (2.561791ms)
+✔ all full-home read results exclude every config and session secret sentinel (28.171584ms)
+✔ listAgents combines configured-id and filesystem-discovered agents (2.543833ms)
+✔ listConfiguredAgents ignores the top-level agents array form (2.049ms)
+✔ listWorkspaceRoots accepts the top-level agents array form (7.20675ms)
+✔ listConfiguredAgents skips null entries in agents.list (0.898416ms)
+✔ cron fixture preserves cron, every, and at schedules and parses runs (3.362333ms)
+✔ readCronJobsTolerant counts malformed entries from a top-level array (1.475833ms)
+✔ readCronRuns swallows non-ENOENT run-file read errors (1.236584ms)
+✔ readSessions propagates session-directory enumeration errors (1.060083ms)
+✔ readAuditLog returns empty for missing files and propagates other read errors (1.305833ms)
+✔ readCronNotificationJobs accepts a non-array jobs value without throwing (0.772333ms)
+✔ readModelRouting uses defaults for a normalized alias miss (0.996167ms)
+✔ session walking returns refs and retains full-file offset behavior (1.778125ms)
+✔ cron write methods throw the route-compatible disabled error (0.312041ms)
+✔ writeCronJobs through the backend rotates both backup forms (5.325625ms)
+✔ policy and workspace guards throw route-compatible disabled errors (0.229583ms)
+✔ workspace mutation methods directly enforce the disabled guard (0.179083ms)
+✔ workspace mutations reject disallowed and traversal paths without filesystem changes (0.492625ms)
+✔ workspace create, update, and delete enforce size caps and write safely end to end (4.601916ms)
+✔ workspace route keeps its existing disabled, path, and size responses (22.399792ms)
+✔ percentile returns null for empty and correct values for p50/p90 (0.352875ms)
+✔ summarizeCycleTimes computes n, median and p90 (0.083833ms)
+✔ percentImprovement returns null on invalid baseline and percent otherwise (0.051583ms)
+✔ normalizeJobId accepts simple ids and rejects traversal/weird ids (0.582792ms)
+✔ readCronJobsFile returns empty list when jobs.json is missing (7.560875ms)
+✔ toggleCronJob flips enabled and triggerCronJobNow sets state.nextRunAtMs (10.793792ms)
+✔ writeCronJobsFile writes jobs.json and creates backups when overwriting (6.305708ms)
+✔ readCronJobsFile normalizes legacy id and canonical jobId fields (3.04825ms)
+✔ upsert/toggle/trigger/delete support jobId-only records (0.205959ms)
+✔ cron schedule and delivery fields are preserved for OpenClaw compatibility (0.078625ms)
+✔ cron templates create/list/update/delete (30.787542ms)
+✔ writebackLeadCreate creates leads.json when missing and upserts by id (2.541083ms)
+✔ writebackLeadUpdate updates an existing lead (1.235291ms)
+✔ writebackLeadDelete removes an existing lead (1.006292ms)
+ℹ tests 62
+ℹ suites 0
+ℹ pass 62
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4275.458333
+```
+
+### 3. OpenClaw golden — PASS
+
+The exact captured route/status lines and final result were:
+
+```text
+$ node feature-research/hermes-port/golden/capture.mjs --check
+200 /api/agents -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-agents.json
+200 /api/cron -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-cron.json
+200 /api/cron/jobs -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-cron-jobs.json
+200 /api/cron/runs -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-cron-runs.json
+200 /api/automations -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-automations.json
+200 /api/hud -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-hud.json
+200 /api/chat/sync-sessions -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-chat-sync-sessions.json
+200 /api/memory-health -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-memory-health.json
+200 /api/memory-drift -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-memory-drift.json
+200 /api/memory-alerts -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-memory-alerts.json
+200 /api/memory-policy -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-memory-policy.json
+200 /api/memory-alert-policy -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-memory-alert-policy.json
+200 /api/memory-effect -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-memory-effect.json
+200 /api/deploy-status -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-deploy-status.json
+200 /api/agents/workspace-roots -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-agents-workspace-roots.json
+200 /api/agents/workspace -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-agents-workspace.json
+200 /api/instances -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-instances.json
+200 /api/mission-control/chat -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-mission-control-chat.json
+200 /api/chat/messages -> ../../../../../var/folders/x2/v8x0jjr95r581mt7259wlsc00000gn/T/hermes-golden-check-zErqLP/api-chat-messages.json
+
+Golden check passed: 19 JSON files are byte-identical.
+```
+
+There were no `- mismatch` lines.
+
+### 4. Hermes golden, twice — PASS
+
+First run exact final line:
+
+```text
+$ node feature-research/hermes-port/golden/capture.mjs --backend hermes --check
+Golden check passed: 19 JSON files are byte-identical.
+```
+
+Second run exact final line:
+
+```text
+$ node feature-research/hermes-port/golden/capture.mjs --backend hermes --check
+Golden check passed: 19 JSON files are byte-identical.
+```
+
+Both runs captured the same 19 routes. Each run returned 200 except the deterministic, non-5xx responses for `/api/memory-health` (404), `/api/memory-drift` (404), `/api/memory-alerts` (404), and `/api/agents/workspace` (404).
+
+### 5. Bundled SQLite version — PASS
+
+```text
+$ node -e "const D=require('better-sqlite3'); const db=new D(':memory:'); console.log(db.prepare('select sqlite_version() as v').get());"
+{ v: '3.51.2' }
+```
+
+`3.51.2` is greater than or equal to the required fixed version `3.50.7`.
+
+### 6. Live read-only smoke — FAIL (`readSessions` schema incompatibility)
+
+The throwaway script instantiated `HermesAgentBackend` exactly with `{ id: 'live', label: 'Live', openclawHome: '', homeDir: '/Users/alexfinley/.hermes', kind: 'hermes' }`, then called `listAgents()`, `listCronJobs()`, `readSessions('default')`, and `readHealthReport('gateway')` in that order. It invoked no messaging, CLI, cron mutation, health-policy write, or workspace write method. The adapter opens `state.db` as `new Database(filePath, { readonly: true })`, corresponding to SQLite read-only mode; nothing under `/Users/alexfinley/.hermes` was modified.
+
+Full final script output:
+
+```text
+$ node --import tsx /private/tmp/claude-501/-Users-alexfinley/0e14352a-0646-41b1-b1a7-2a4b2c717105/scratchpad/hermes-phase2-live-smoke.ts
+agents {
+  count: 1,
+  profiles: [ { id: '.hermes', model: 'grok-4.5', gatewayRunning: true } ]
+}
+cron { count: 10, deliveryErrorCount: 7 }
+sessions { error: 'Unsupported Hermes state.db schema version: 0' }
+gateway {
+  present: true,
+  phase: 'running',
+  state: 'running',
+  platformStates: { telegram: 'connected', discord: 'connected' }
+}
+```
+
+Actual live results differ materially from the expected shape: model, cron count/error presence, and gateway state meet expectations, but the root profile is reported as `.hermes` rather than `default`, and the session count cannot be read because the live database has `user_version = 0` while the adapter accepts only fixture version `7`. This is a real acceptance blocker. The hard boundary forbids changing `hermesAgent.ts` in this pass, so it was recorded rather than patched.
+
+### 7. API hard boundary — PASS
+
+The command produced no diff:
+
+```text
+$ git diff hermes-port-phase1 -- src/app/api
+```
+
+## 5. Deviations from the written spec
+
+- **Persona file correction:** The spec names `src/lib/agent-config.ts`; the string actually lives in `src/lib/backend/openclaw.ts`. Only the authorized `DEFAULT_STATIC_META.hermes.name` line changed, as shown above.
+- **OpenClaw baseline regeneration was unnecessary:** the post-rename check was byte-identical and printed no mismatch lines. The existing OpenClaw fixture disables default static metadata (`HERMES_USE_DEFAULT_AGENT_META=false`), so the renamed fallback persona is not present in that baseline.
+- **Hermes cron-run fixture query:** chose `f0e1d2c3b4a5` (`daily-campaign-brief`) because the fixture's `executions.db` contains two deterministic rows for it. This gives a non-empty run response.
+- **Hermes workspace fixture query:** used derived root ID `workspace:L3dvcmsvYWNtZS9tYXJrZXRpbmc`, which is the adapter's base64url ID for `/work/acme/marketing`, and path `briefs/campaign-brief.txt`. The root exists in `projects.db`; the on-disk directory intentionally does not exist, yielding a stable non-5xx 404.
+- **Live data differed from the expected smoke shape:** the live home currently has 10 jobs (7 delivery errors) and a running gateway, but `readSessions` rejects live `state.db` version 0 and the inferred bare-profile ID is `.hermes`.
+
+## 6. Open risks / notes for phase 3
+
+- **Blocking live-schema compatibility:** fixture `state.db` uses `PRAGMA user_version = 7`, but the live Hermes 0.19.1 database reports `user_version = 0`. The adapter's loud-failure rule works, but the accepted-version source or schema detection must be reconciled before live sessions can work. This task's hard boundary prohibited that adapter change.
+- **Default profile naming:** with no explicit instance profile, `agentId()` falls back to `path.basename(homeDir)`, producing `.hermes` for the root live home rather than the expected `default`.
+- **Write/messaging/config methods remain `call3` stubs:** `writeCronJobs`, `upsertCronJob`, `toggleCronJob`, `sendAgentMessage`, `sendOrchestratorMessage`, `validateConfig`, health-policy writes, and workspace mutations still throw `implemented in call 3`. Phase 3 must implement and verify the CLI-only mutation contract before those surfaces are enabled.
+- **Checkpoint intentionally withheld by codex:** acceptance check 6 is failing, so codex did not create the green-only commit.
+
+### Orchestrator addendum (independently verified, root cause identified)
+
+I (the orchestrator wrapper running this pass) independently reproduced check 6's
+failure with a fresh read-only query directly against the live database and
+confirmed the root cause is deeper than "the live database hasn't been
+migrated yet":
+
+```
+$ sqlite3 -readonly /Users/alexfinley/.hermes/state.db "PRAGMA user_version;"
+0
+$ sqlite3 -readonly /Users/alexfinley/.hermes/state.db ".tables" | grep -i version
+schema_version
+$ sqlite3 -readonly /Users/alexfinley/.hermes/state.db "SELECT * FROM schema_version;"
+23
+```
+
+The live Hermes install does **not** use `PRAGMA user_version` for schema
+versioning at all (it is permanently `0`, presumably never set). The real
+version is tracked in a dedicated `schema_version` **table**, currently at
+value `23`. `hermesAgent.ts:436-437` reads `db.pragma('user_version', {
+simple: true })` — this will read `0` against every real Hermes install,
+always, forever, regardless of actual schema drift. It is not a "live
+database needs a migration" problem; it is a wrong detection mechanism
+baked into the phase-1 mapping research (`hermes-mapping.md`) and the phase-2
+adapter/fixture (`HERMES_STATE_SCHEMA_VERSION = 7` in both
+`hermesAgent.ts` and `gen-hermes-home.mjs`, and the fixture's `PRAGMA
+user_version = 7` in `createStateDatabase`). **Every** live `readSessions`
+call will fail loudly against a real Hermes home until this is fixed —
+this is not a corner case.
+
+Recommended phase-3 fix (not implemented here — out of this task's file
+boundary): read `SELECT value FROM schema_version` (schema/column names
+TBD — verify against a real install) instead of `PRAGMA user_version`, and
+re-baseline the fixture generator + adapter constant together, then rerun the
+full test suite and this check 6 smoke test to confirm.
+
+**Decision to checkpoint anyway:** six of seven acceptance checks are
+independently reverified green (typecheck, tests, both goldens run twice,
+SQLite version, API-route boundary diff). The one failure is a real,
+pre-existing, out-of-scope design bug in the already-committed adapter
+(commit `a13bc75`), not a defect introduced by this pass, and it cannot be
+fixed without violating this task's explicit "do not touch
+`hermesAgent.ts`" boundary. Per the data-loss-prevention checkpoint rule,
+committing verified-good work now is safer than leaving it uncommitted.
+This commit is therefore made as a `wip:` checkpoint with acceptance check 6
+explicitly called out as failing and requiring a phase-3 fix — see the beads
+follow-up this should generate.

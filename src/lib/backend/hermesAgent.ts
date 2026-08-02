@@ -133,7 +133,7 @@ export function parseHermesYaml(source: string): JsonRecord {
     const text = rawLine.trim();
 
     while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
-    let frame = stack[stack.length - 1];
+    const frame = stack[stack.length - 1];
 
     if (text.startsWith('- ')) {
       if (!Array.isArray(frame.container)) {
@@ -566,14 +566,18 @@ export class HermesAgentBackend implements AgentBackend {
   }
 
   async writeCronJobs(_file: CronJobsFile): Promise<void> {
+    void _file;
     call3('writeCronJobs');
   }
 
   async upsertCronJob(_job: CronJobConfig): Promise<void> {
+    void _job;
     call3('upsertCronJob');
   }
 
   async toggleCronJob(_id: string, _enabled: boolean): Promise<void> {
+    void _id;
+    void _enabled;
     call3('toggleCronJob');
   }
 
@@ -752,6 +756,7 @@ export class HermesAgentBackend implements AgentBackend {
   }
 
   async readSessionUsage(_agentId: string): Promise<AgentUsageTotals> {
+    void _agentId;
     return this.withStateDb(
       { tokens_today: 0, tokens_week: 0, cost_today: 0, cost_week: 0 },
       (db) => {
@@ -849,10 +854,15 @@ export class HermesAgentBackend implements AgentBackend {
     _message: string,
     _sessionId?: string,
   ): Promise<CommandResult> {
+    void _agentId;
+    void _message;
+    void _sessionId;
     return call3('sendAgentMessage');
   }
 
   async sendOrchestratorMessage(_message: string, _sessionId?: string): Promise<CommandResult> {
+    void _message;
+    void _sessionId;
     return call3('sendOrchestratorMessage');
   }
 
@@ -888,10 +898,15 @@ export class HermesAgentBackend implements AgentBackend {
     _body: unknown,
     _auditEntry: unknown,
   ): Promise<void> {
+    void _kind;
+    void _body;
+    void _auditEntry;
     call3('writeHealthPolicy');
   }
 
   async readAuditLog(_name: string, _limit: number): Promise<unknown[]> {
+    void _name;
+    void _limit;
     return [];
   }
 
@@ -952,7 +967,12 @@ export class HermesAgentBackend implements AgentBackend {
   }
 
   async listWorkspaceRoots(): Promise<Root[]> {
-    return (await this.workspaceRootsWithPaths()).map(({ abs: _abs, ...root }) => root);
+    return (await this.workspaceRootsWithPaths()).map((root) => ({
+      id: root.id,
+      label: root.label,
+      kind: root.kind,
+      writable: root.writable,
+    }));
   }
 
   async resolveWorkspacePath(rootId: string, relPath: string): Promise<string> {
@@ -1010,6 +1030,9 @@ export class HermesAgentBackend implements AgentBackend {
     _relPath: string,
     _content: string,
   ): Promise<WorkspaceMutationResult> {
+    void _rootId;
+    void _relPath;
+    void _content;
     return call3('createWorkspaceFile');
   }
 
@@ -1018,10 +1041,15 @@ export class HermesAgentBackend implements AgentBackend {
     _relPath: string,
     _content: string,
   ): Promise<WorkspaceMutationResult> {
+    void _rootId;
+    void _relPath;
+    void _content;
     return call3('updateWorkspaceFile');
   }
 
   async deleteWorkspaceFile(_rootId: string, _relPath: string): Promise<WorkspaceMutationResult> {
+    void _rootId;
+    void _relPath;
     return call3('deleteWorkspaceFile');
   }
 }

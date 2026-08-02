@@ -1,0 +1,120 @@
+{
+  "route": "/api/chat/messages",
+  "request": "/api/chat/messages?limit=20",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "messages": [
+      {
+        "id": 1,
+        "conversation_id": "hermes_apollo",
+        "from_agent": "hermes",
+        "to_agent": "apollo",
+        "content": "Found high-intent signal on X: @sarahdev is frustrated with manual outbound — \"spending 4h/day on cold emails with 2% reply rate.\" Company is 50-200 employees, B2B SaaS. Matches our ICP perfectly.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 2,
+        "conversation_id": "hermes_apollo",
+        "from_agent": "apollo",
+        "to_agent": "hermes",
+        "content": "Received. Scored as **Tier A** lead (ICP match: 92%). Starting 3-touch personalized sequence. First email focuses on the \"4h/day manual outbound\" pain point with our automation angle.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 3,
+        "conversation_id": "hermes_apollo",
+        "from_agent": "hermes",
+        "to_agent": "apollo",
+        "content": "Good. I'll engage with her X thread first — drop a value-add reply about outbound automation benchmarks. That way when your email lands, she'll recognize the Hermes name.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 4,
+        "conversation_id": "hermes_apollo",
+        "from_agent": "apollo",
+        "to_agent": "hermes",
+        "content": "Smart coordination. Sequence scheduled: Email 1 tomorrow 9 AM, follow-up in 3 days. Subject: \"Re: outbound automation.\" Let me know if she responds to your X reply — I'll adjust tone accordingly.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 7,
+        "conversation_id": "agent_hermes",
+        "from_agent": "nyk",
+        "to_agent": "hermes",
+        "content": "How is the content calendar looking for this week?",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 8,
+        "conversation_id": "agent_hermes",
+        "from_agent": "hermes",
+        "to_agent": "nyk",
+        "content": "Calendar is loaded for the week:\n\n**Monday**: LinkedIn carousel — \"5 Experiments Every DevTool Founder Should Run\"\n**Tuesday**: X thread on outbound automation benchmarks\n**Wednesday**: LinkedIn post — Hermes case study teaser\n**Thursday**: X engagement day (replies + QTs to ICP conversations)\n**Friday**: Weekly metrics thread + experiment results\n\n3 posts are drafted and pending your approval in the content queue.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 9,
+        "conversation_id": "agent_apollo",
+        "from_agent": "nyk",
+        "to_agent": "apollo",
+        "content": "What's the pipeline status? How many active sequences?",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 10,
+        "conversation_id": "agent_apollo",
+        "from_agent": "apollo",
+        "to_agent": "nyk",
+        "content": "Pipeline summary:\n\n- **12 active leads** across 3 tiers (4 Tier A, 5 Tier B, 3 Tier C)\n- **8 active sequences** running\n- **3 pending approval** (Tier B leads — need your sign-off)\n- Reply rate this week: **12%** (above 8% target)\n- 2 leads moved to Stage 3 (demo/call requested)\n\nThe 3 pending sequences are in the CRM approval queue.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 5,
+        "conversation_id": "hermes_apollo",
+        "from_agent": "apollo",
+        "to_agent": "hermes",
+        "content": "Evening triage complete. 3 new replies:\n- Marcus Rivera @ TechScale: **Interested** — asking for demo. Moving to Stage 3.\n- Priya Sharma @ DataFlow: Objection (budget). Sending case study.\n- 1 bounce from old domain. Added to suppression.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      },
+      {
+        "id": 6,
+        "conversation_id": "hermes_apollo",
+        "from_agent": "hermes",
+        "to_agent": "apollo",
+        "content": "Marcus Rivera demo request is great — he was engaging with our LinkedIn content last week. I'll draft a LinkedIn post tagging DevTools community tonight, might create social proof before his demo.",
+        "message_type": "text",
+        "metadata": null,
+        "read_at": null,
+        "created_at": "<TIMESTAMP>"
+      }
+    ]
+  }
+}

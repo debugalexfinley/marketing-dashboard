@@ -1,0 +1,9 @@
+{
+  "route": "/api/memory-health",
+  "request": "/api/memory-health?instance=default",
+  "status": 404,
+  "body_type": "json",
+  "body": {
+    "error": "Memory health report not found"
+  }
+}

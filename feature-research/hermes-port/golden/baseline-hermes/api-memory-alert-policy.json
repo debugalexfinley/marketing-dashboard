@@ -1,0 +1,10 @@
+{
+  "route": "/api/memory-alert-policy",
+  "request": "/api/memory-alert-policy?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "policy": null
+  }
+}

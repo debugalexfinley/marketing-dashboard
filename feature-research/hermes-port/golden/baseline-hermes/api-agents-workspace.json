@@ -1,0 +1,9 @@
+{
+  "route": "/api/agents/workspace",
+  "request": "/api/agents/workspace?instance=default&rootId=workspace%3AL3dvcmsvYWNtZS9tYXJrZXRpbmc&path=briefs%2Fcampaign-brief.txt",
+  "status": 404,
+  "body_type": "json",
+  "body": {
+    "error": "Not found"
+  }
+}

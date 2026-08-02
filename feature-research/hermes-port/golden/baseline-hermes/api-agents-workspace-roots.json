@@ -1,0 +1,29 @@
+{
+  "route": "/api/agents/workspace-roots",
+  "request": "/api/agents/workspace-roots?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "roots": [
+      {
+        "id": "workspace:L3dvcmsvYWNtZS9tYXJrZXRpbmc",
+        "label": "marketing",
+        "kind": "workspace",
+        "writable": false
+      },
+      {
+        "id": "workspace:L3dvcmsvZXhwZXJpbWVudGFs",
+        "label": "experimental",
+        "kind": "workspace",
+        "writable": false
+      },
+      {
+        "id": "workspace:L3dvcmsvc2hhcmVk",
+        "label": "Shared assets",
+        "kind": "workspace",
+        "writable": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "route": "/api/memory-alerts",
+  "request": "/api/memory-alerts?instance=default",
+  "status": 404,
+  "body_type": "json",
+  "body": {
+    "error": "Memory alerts report not found"
+  }
+}

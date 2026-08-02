@@ -1,0 +1,14 @@
+{
+  "route": "/api/memory-effect",
+  "request": "/api/memory-effect?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "namespace": "default",
+    "available": false,
+    "reason": "insufficient_history_or_policy_changes",
+    "history_points": 0,
+    "policy_changes": 0
+  }
+}

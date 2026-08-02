@@ -142,7 +142,7 @@ const DEFAULT_STATIC_META: Record<string, AgentStaticMeta> = {
     description: 'Primary agent that coordinates the rest of the system.',
   },
   hermes: {
-    name: 'Hermes',
+    name: 'Maven',
     emoji: '\u{1F3DB}\u{FE0F}',
     role: 'Marketing Engine',
     description:

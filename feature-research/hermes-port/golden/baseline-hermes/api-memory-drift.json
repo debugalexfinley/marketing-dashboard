@@ -1,0 +1,9 @@
+{
+  "route": "/api/memory-drift",
+  "request": "/api/memory-drift?instance=default",
+  "status": 404,
+  "body_type": "json",
+  "body": {
+    "error": "Memory drift report not found"
+  }
+}

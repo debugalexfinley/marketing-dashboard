@@ -1,0 +1,33 @@
+{
+  "route": "/api/cron/runs",
+  "request": "/api/cron/runs?instance=default&id=f0e1d2c3b4a5",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "runs": [
+      {
+        "id": "22222222222222222222222222222222",
+        "jobId": "f0e1d2c3b4a5",
+        "ts": "<TIMESTAMP>",
+        "status": "failed",
+        "summary": null,
+        "error": "Synthetic provider timeout",
+        "startedAtMs": "<TIMESTAMP>",
+        "finishedAtMs": "<TIMESTAMP>",
+        "durationMs": 1750
+      },
+      {
+        "id": "11111111111111111111111111111111",
+        "jobId": "f0e1d2c3b4a5",
+        "ts": "<TIMESTAMP>",
+        "status": "completed",
+        "summary": "completed",
+        "error": null,
+        "startedAtMs": "<TIMESTAMP>",
+        "finishedAtMs": "<TIMESTAMP>",
+        "durationMs": 3200
+      }
+    ]
+  }
+}

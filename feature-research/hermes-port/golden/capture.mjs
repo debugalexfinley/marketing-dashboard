@@ -11,6 +11,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { genHermesHome } from '../fixtures/gen-hermes-home.mjs';
+
 const TEST_USER = 'golden-admin';
 const TEST_PASS = 'golden-fixture-password';
 const PATH_TOKEN = '<FIXTURE_PATH>';
@@ -23,15 +25,28 @@ const repoRoot = path.resolve(scriptDir, '../../..');
 const fixtureRoot = path.join(repoRoot, 'feature-research/hermes-port/fixtures/openclaw-home');
 
 function parseArgs(argv) {
-  if (argv.includes('--check')) {
-    if (argv.length !== 1) throw new Error('Usage: node capture.mjs --check');
-    return { check: true };
+  const backendIndex = argv.indexOf('--backend');
+  const backend = backendIndex === -1 ? 'openclaw' : argv[backendIndex + 1];
+  if (!['openclaw', 'hermes'].includes(backend)) {
+    throw new Error('Usage: node capture.mjs [--backend hermes] (--out <dir> | --check)');
   }
-  const index = argv.indexOf('--out');
-  if (index === -1 || !argv[index + 1] || argv[index + 1].startsWith('--')) {
-    throw new Error('Usage: node capture.mjs --out <dir> | --check');
+  const remaining = backendIndex === -1
+    ? argv
+    : argv.filter((_, index) => index !== backendIndex && index !== backendIndex + 1);
+  if (remaining.includes('--check')) {
+    if (remaining.length !== 1) {
+      throw new Error('Usage: node capture.mjs [--backend hermes] (--out <dir> | --check)');
+    }
+    return { backend, check: true };
   }
-  return { check: false, outDir: path.resolve(repoRoot, argv[index + 1]) };
+  const index = remaining.indexOf('--out');
+  if (index === -1 || !remaining[index + 1] || remaining[index + 1].startsWith('--')) {
+    throw new Error('Usage: node capture.mjs [--backend hermes] (--out <dir> | --check)');
+  }
+  if (remaining.length !== 2) {
+    throw new Error('Usage: node capture.mjs [--backend hermes] (--out <dir> | --check)');
+  }
+  return { backend, check: false, outDir: path.resolve(repoRoot, remaining[index + 1]) };
 }
 
 async function compareJsonDirectories(actualDir, expectedDir) {
@@ -203,6 +218,14 @@ async function main() {
     await writeFile(fixturePgrep, '#!/bin/sh\nexit 1\n', 'utf8');
     await chmod(fixturePgrep, 0o755);
 
+    const hermesHome = args.backend === 'hermes'
+      ? (await genHermesHome(path.join(scratchDir, 'hermes-home'))).fullDir
+      : null;
+    const hermesBin = path.join(
+      repoRoot,
+      'feature-research/hermes-port/fixtures/hermes-bin/hermes',
+    );
+
     const port = await reservePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const env = {
@@ -227,6 +250,21 @@ async function main() {
       HERMES_SERVICE_NAME: 'hermes-golden-fixture.service',
       HERMES_HOST_LOCK: 'off',
       HERMES_USE_DEFAULT_AGENT_META: 'false',
+      ...(hermesHome
+        ? {
+            HERMES_OPENCLAW_INSTANCES: JSON.stringify([
+              {
+                id: 'default',
+                label: 'Default',
+                kind: 'hermes',
+                openclawHome: '',
+                homeDir: hermesHome,
+                profile: 'fixture-profile',
+                hermesBin,
+              },
+            ]),
+          }
+        : {}),
     };
 
     console.log('Building production app...');
@@ -257,11 +295,23 @@ async function main() {
 
     // Only GET handlers are captured. The two chat routes support safe GET reads;
     // their POST handlers are intentionally never invoked.
+    const cronJobId = args.backend === 'hermes' ? 'f0e1d2c3b4a5' : 'campaign-digest';
+    const workspaceQuery = args.backend === 'hermes'
+      ? {
+          instance: 'default',
+          rootId: 'workspace:L3dvcmsvYWNtZS9tYXJrZXRpbmc',
+          path: 'briefs/campaign-brief.txt',
+        }
+      : {
+          instance: 'default',
+          rootId: 'workspace-hermes',
+          path: 'briefs/campaign-brief.txt',
+        };
     const routes = [
       { path: '/api/agents', query: { instance: 'default' } },
       { path: '/api/cron', query: { instance: 'default' } },
       { path: '/api/cron/jobs', query: { instance: 'default' } },
-      { path: '/api/cron/runs', query: { instance: 'default', id: 'campaign-digest' } },
+      { path: '/api/cron/runs', query: { instance: 'default', id: cronJobId } },
       { path: '/api/automations', query: { instance: 'default' } },
       { path: '/api/hud', query: { instance: 'default' } },
       { path: '/api/chat/sync-sessions', query: { instance: 'default' } },
@@ -273,7 +323,7 @@ async function main() {
       { path: '/api/memory-effect', query: { instance: 'default' } },
       { path: '/api/deploy-status', query: { instance: 'default' } },
       { path: '/api/agents/workspace-roots', query: { instance: 'default' } },
-      { path: '/api/agents/workspace', query: { instance: 'default', rootId: 'workspace-hermes', path: 'briefs/campaign-brief.txt' } },
+      { path: '/api/agents/workspace', query: workspaceQuery },
       { path: '/api/instances' },
       { path: '/api/mission-control/chat', query: { mode: 'orchestrator', limit: '20' } },
       { path: '/api/chat/messages', query: { limit: '20' } },
@@ -306,7 +356,10 @@ async function main() {
     }
 
     if (args.check) {
-      const baselineDir = path.join(scriptDir, 'baseline');
+      const baselineDir = path.join(
+        scriptDir,
+        args.backend === 'hermes' ? 'baseline-hermes' : 'baseline',
+      );
       const comparison = await compareJsonDirectories(outDir, baselineDir);
       if (comparison.mismatches.length > 0) {
         console.log('\nGolden check failed:');

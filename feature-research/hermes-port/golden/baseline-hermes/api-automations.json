@@ -1,0 +1,42 @@
+{
+  "route": "/api/automations",
+  "request": "/api/automations?instance=default",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "instance": "default",
+    "approvals": [],
+    "skill_executions": [],
+    "schedule": [],
+    "hourly_activity": [],
+    "experiment": {
+      "contract": {
+        "total_jobs": 3,
+        "with_contract": 0,
+        "without_contract": 3,
+        "compliance_pct": 0,
+        "missing_job_ids": [
+          "f0e1d2c3b4a5",
+          "b1c2d3e4f5a6",
+          "a9ce2d311889"
+        ]
+      },
+      "decisions": {
+        "window_days": 7,
+        "counts": {
+          "SCALE": 0,
+          "ITERATE": 0,
+          "KILL": 0
+        },
+        "recent": []
+      }
+    },
+    "summary": {
+      "pending_approvals": 0,
+      "total_executions_30d": 0,
+      "active_cron_jobs": 0,
+      "experiment_compliance_pct": 0,
+      "experiment_decisions_7d": 0
+    }
+  }
+}

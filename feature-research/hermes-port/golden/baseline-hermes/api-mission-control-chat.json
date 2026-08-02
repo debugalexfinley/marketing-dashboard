@@ -1,0 +1,13 @@
+{
+  "route": "/api/mission-control/chat",
+  "request": "/api/mission-control/chat?mode=orchestrator&limit=20",
+  "status": 200,
+  "body_type": "json",
+  "body": {
+    "conversation_id": "mc:orchestrator",
+    "messages": [],
+    "agents": [
+      "fixture-profile"
+    ]
+  }
+}
