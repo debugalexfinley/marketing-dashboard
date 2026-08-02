@@ -1,9 +1,16 @@
 {
   "route": "/api/agents/workspace",
-  "request": "/api/agents/workspace?instance=default&rootId=workspace%3AL3dvcmsvYWNtZS9tYXJrZXRpbmc&path=briefs%2Fcampaign-brief.txt",
-  "status": 404,
+  "request": "/api/agents/workspace?instance=default&rootId=workspace%3A%3CFIXTURE_WORKSPACE_ID%3E&path=briefs%2Fcampaign-brief.txt",
+  "status": 200,
   "body_type": "json",
   "body": {
-    "error": "Not found"
+    "rootId": "workspace:<FIXTURE_WORKSPACE_ID>",
+    "rootLabel": "marketing",
+    "kind": "workspace",
+    "writable": true,
+    "path": "briefs/campaign-brief.txt",
+    "size": 102,
+    "mtimeMs": "<TIMESTAMP>",
+    "content": "Campaign: Synthetic Autumn Launch\nGoal: Exercise the Hermes workspace golden with deterministic text.\n"
   }
 }

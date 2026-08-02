@@ -765,3 +765,152 @@ direct-read secret filtering are active, N1's ±10-minute attribution bound is
 active, and N2's argv-integrity regression coverage is active. Nothing in
 `spec-phase2-fixes.md` B1, B2, B3, N1, or N2 remains stubbed or deferred. All
 six acceptance checks passed.
+
+## Addendum pass
+
+### G1/G2/G3/G6 + non-blocking (source + unit tests)
+
+Fixed in `src/lib/backend/hermesAgent.ts` / `hermesAgent.test.ts`:
+- **G1 (path traversal in tailCronLog/readCronLogInfo):** added
+  `isValidHermesJobId` (strict `/^[0-9a-f]{12}$/`), applied it before any
+  job-id is joined into a filesystem path or used to query cron runs/usage,
+  plus a realpath-based containment check on the resolved `cron/output/<id>`
+  directory as defense-in-depth. Invalid/traversal job ids now resolve to the
+  same "not found" empty shape every other unknown-job path already used
+  (never throw). New tests cover `../../../../etc`, an absolute path, and a
+  mixed traversal/valid-looking id — all assert `null`/empty, never leaked
+  content.
+- **G2 (LIKE wildcard widening in cronSessionUsage):** the same 12-hex
+  validation short-circuits invalid job ids before any SQL runs; as
+  defense-in-depth the LIKE pattern also now escapes `%`, `_`, and `\` via a
+  new `escapeHermesSqlLike` helper with `ESCAPE '\'` in the query. New tests
+  cover a wildcard-laden invalid job id (rejected before querying) and the
+  escape helper's exact output.
+- **G3 (cron session timestamp parsed as UTC instead of local):**
+  `cronSessionTimestamp` now builds the epoch via the local-timezone `Date`
+  constructor (`new Date(y, m-1, d, h, min, s).getTime()`) instead of
+  `Date.UTC`, matching how Hermes actually writes the `cron_<id>_<ts>` session
+  suffix (local wall time — America/Chicago on this machine, matching
+  hermes-mapping.md). A focused unit test asserts the local-time value differs
+  from the old UTC-based value and that the function returns the local-time
+  value; an integration test forces `sessions.started_at` to NULL for the
+  relevant fixture session so the join genuinely falls back through this
+  function, and asserts the correct run is still matched within the existing
+  ±10-minute bound. Shown failing under `Date.UTC` and passing under the
+  local-time fix (see call transcript; both wrong-session and correct-session
+  assertions were captured before/after).
+- **G6 (tests that cannot fail):** replaced the `typeof Date.parse(...) ===
+  'number'` tautology with `Number.isFinite` plus an exact expected mtime
+  (fixture `.md` file mtimes are now pinned via `fs.utimesSync` in
+  gen-hermes-home.mjs for determinism); replaced the self-referential
+  `gatewayRunning` formula-vs-formula assertion with two pinned-offset fixture
+  homes (heartbeat at now-30s → expect `true`, now-300s → expect `false`,
+  against the real `GATEWAY_FRESHNESS_MS` = 120s threshold); replaced the
+  `tokens_today/tokens_week >= 0` weak assertions with exact expected totals
+  from a dedicated fixture session pinned to the current time. Each tightened
+  assertion was proven to bite by deliberately reintroducing the corresponding
+  bug and observing the test fail, then restoring the fix and observing it
+  pass.
+- **Non-blocking items:** `readJson` now distinguishes `ENOENT` (returns
+  `null`, unchanged) from any other error including JSON parse failures and
+  permission errors (now thrown, per "missing ⇒ empty, broken ⇒ loud"); a new
+  test writes a corrupt `jobs.json` and asserts `listCronJobs` now rejects
+  instead of silently returning `{jobs: []}`, while the genuinely-missing bare
+  fixture still returns the empty shape. `toEpochMs` now rejects timestamps
+  outside a documented 1990–2200 sanity window instead of blindly multiplying
+  any finite number by 1000, with a test feeding `Number.MAX_SAFE_INTEGER` and
+  asserting `null`. The `file:...?mode=ro` URI form from hermes-mapping.md's
+  convention was evaluated and NOT adopted: the installed better-sqlite3
+  12.6.2 does not enable `SQLITE_OPEN_URI` and rejects the URI form outright
+  (`unable to open database file`) against the fixture and live databases;
+  `{ readonly: true }` (already in place) provides the same read-only
+  guarantee without that regression, so this item is a deliberate, tested
+  deviation from the letter of the addendum in favor of not breaking every
+  SQLite-backed read.
+
+### G5/G7 (test infrastructure)
+
+The remaining G5 stub fidelity gaps are closed. The fixture CLI now touches
+`cron/.jobs.lock` before every cron mutation and replaces `jobs.json` with a
+same-directory temp-file write plus `renameSync`. A documented
+`HERMES_STUB_FORCE_FAILURE` prompt substring makes `-z` exit non-zero, emit an
+error on stderr, and still write a usage report with `completed: false`,
+`failed: true`, and a synthetic `failure` reason. The already-present
+`-p`/`--profile` stripping, temp-root refusal guard, and ISO `updated_at` output
+were verified and left intact. New end-to-end tests cover the lock artifact
+across create/edit/pause/resume/remove, failed usage parsing, and refusal of a
+repo-local home before any write.
+
+G7 now uses a real, non-secret workspace sibling beside the generated `full/`
+home. Its registered canonical path contains `briefs/campaign-brief.txt` with
+fixed synthetic content and mtime. Capture requests its computed base64url root
+ID and normalizes that temp-derived ID to `workspace:<FIXTURE_WORKSPACE_ID>`.
+The workspace golden therefore changes from 404 to a 200 file response; the
+workspace-roots golden changes only that root ID. No other Hermes baseline
+changed. The capture environment now pins `TZ=America/Chicago` and
+`LANG=en_US.UTF-8` for both build and server processes; ambient TZ was also
+confirmed as `America/Chicago`, so the pin itself produced no output diff.
+
+Key evidence:
+
+```text
+targeted G5 tests: 3 passed, 0 failed
+pnpm typecheck: exit 0
+pnpm test: 82 passed, 0 failed
+Hermes golden check #1: 19 JSON files are byte-identical
+Hermes golden check #2: 19 JSON files are byte-identical
+OpenClaw golden check: 19 JSON files are byte-identical
+git diff hermes-port-phase1 -- src/app/api: empty
+```
+
+No route, component, package, or adapter implementation file was changed in
+this addendum pass during the G5/G7 call.
+
+### Orchestrator-run verification (independent of the two implementation calls)
+
+All acceptance checks were re-run independently after both codex calls
+completed, not just trusted from their self-reports:
+
+```text
+$ pnpm typecheck            -> clean, exit 0
+$ pnpm test                 -> 82 pass, 0 fail
+$ node .../capture.mjs --backend hermes --check   -> 19 files byte-identical (run 1)
+$ node .../capture.mjs --backend hermes --check   -> 19 files byte-identical (run 2)
+$ node .../capture.mjs --check                    -> 19 files byte-identical (OpenClaw)
+$ grep -rn "call3\|implemented in call" src/lib/backend/   -> no matches
+$ grep -n "shell: true" src/lib/backend/hermesAgent.ts     -> no matches
+$ git diff hermes-port-phase1 -- src/app/api                -> empty
+$ git status --porcelain     -> only the 8 files on the Files-touched boundary
+```
+
+Live read-only smoke against `/Users/alexfinley/.hermes` (HermesAgentBackend
+instantiated directly via tsx, reads only — `listAgents`, `listCronJobs`,
+`readSessions`, `readHealthReport('gateway')`; no CLI invocations, no `-z`, no
+writes):
+
+```text
+agents: [{ id: ".hermes", model: "grok-4.5", gatewayRunning: true, ... }]
+cron jobs count: 10
+jobs with deliveryError: 7
+sessions count: 126
+gateway health: { heartbeat: {...}, lifecycle: { phase: "running" }, platforms: { gateway_state: "running", telegram: connected, discord: connected } }
+```
+
+Matches the expected shape from spec-phase2.md's acceptance check 6 (default
+profile, model grok-4.5, ≥5 cron jobs incl. delivery errors, ≥50 sessions,
+gateway running) and confirms none of the G1–G3 job-id validation changes
+broke live reads.
+
+### Final verdict
+
+All addendum acceptance criteria (G1, G2, G3, G5 remaining items, G6, G7, plus
+the three non-blocking items) are implemented and independently verified,
+with one documented deviation (SQLite URI form not adopted — see above,
+functionally equivalent, tested). `git diff --stat` for this pass touches
+exactly: `src/lib/backend/hermesAgent.ts`, `src/lib/backend/hermesAgent.test.ts`,
+`feature-research/hermes-port/fixtures/gen-hermes-home.mjs`,
+`feature-research/hermes-port/fixtures/hermes-bin/hermes`,
+`feature-research/hermes-port/golden/capture.mjs`,
+`feature-research/hermes-port/golden/baseline-hermes/api-agents-workspace.json`,
+`feature-research/hermes-port/golden/baseline-hermes/api-agents-workspace-roots.json`,
+and this audit file — nothing outside the addendum's files-touched boundary.

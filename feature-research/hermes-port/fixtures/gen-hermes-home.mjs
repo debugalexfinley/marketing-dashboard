@@ -48,7 +48,7 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function createStateDatabase(filePath) {
+function createStateDatabase(filePath, workspaceDir) {
   const db = new Database(filePath);
   db.exec(`
     CREATE TABLE schema_version (
@@ -157,8 +157,8 @@ function createStateDatabase(filePath) {
       system_prompt: 'SYSTEM_PROMPT_SENTINEL_1', started_at: 1_785_448_020,
       ended_at: 1_785_448_110, message_count: 5, tool_call_count: 1,
       input_tokens: 1_420, output_tokens: 318, cache_read_tokens: 256,
-      reasoning_tokens: 61, cwd: '/work/acme/marketing', git_branch: 'main',
-      git_repo_root: '/work/acme/marketing', billing_provider: 'xai-oauth',
+      reasoning_tokens: 61, cwd: workspaceDir, git_branch: 'main',
+      git_repo_root: workspaceDir, billing_provider: 'xai-oauth',
       estimated_cost_usd: 0.0137, actual_cost_usd: 0.0129,
       cost_status: 'estimated', cost_source: 'pricing_table',
       title: 'CLI campaign planning', api_call_count: 2,
@@ -184,8 +184,8 @@ function createStateDatabase(filePath) {
       started_at: 1_785_592_816, ended_at: 1_785_592_880,
       message_count: 3, tool_call_count: 1, input_tokens: 2_205,
       output_tokens: 401, cache_read_tokens: 1_024, reasoning_tokens: 88,
-      cwd: '/work/acme/marketing', git_branch: 'hermes-port-phase2',
-      git_repo_root: '/work/acme/marketing', billing_provider: 'xai-oauth',
+      cwd: workspaceDir, git_branch: 'hermes-port-phase2',
+      git_repo_root: workspaceDir, billing_provider: 'xai-oauth',
       estimated_cost_usd: 0.0214, actual_cost_usd: 0.0208,
       cost_status: 'estimated', cost_source: 'pricing_table',
       title: 'Cron balance watch', api_call_count: 3,
@@ -292,7 +292,7 @@ function createExecutionsDatabase(filePath) {
   db.close();
 }
 
-function createProjectsDatabase(filePath) {
+function createProjectsDatabase(filePath, workspaceDir) {
   const db = new Database(filePath);
   db.exec(`
     CREATE TABLE projects (
@@ -304,15 +304,24 @@ function createProjectsDatabase(filePath) {
       project_id TEXT, path TEXT, label TEXT, is_primary INTEGER, added_at TEXT
     );
     CREATE TABLE discovered_repos (root TEXT, label TEXT, last_seen TEXT);
-    INSERT INTO projects VALUES
-      ('project-1', 'marketing', 'Marketing', 'Synthetic fixture project', 'megaphone', '#4455aa', 'fixture-board', '/work/acme/marketing', '2026-07-01T12:00:00-05:00', 0);
-    INSERT INTO project_folders VALUES
-      ('project-1', '/work/acme/marketing', 'Primary marketing repo', 1, '2026-07-01T12:00:00-05:00'),
-      ('project-1', '/work/shared', 'Shared assets', 0, '2026-07-02T12:00:00-05:00');
-    INSERT INTO discovered_repos VALUES
-      ('/work/acme/marketing', 'marketing', '2026-08-01T08:00:00-05:00'),
-      ('/work/experimental', 'experimental', '2026-08-01T08:30:00-05:00');
   `);
+  db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'project-1', 'marketing', 'Marketing', 'Synthetic fixture project',
+    'megaphone', '#4455aa', 'fixture-board', workspaceDir,
+    '2026-07-01T12:00:00-05:00', 0,
+  );
+  const insertFolder = db.prepare('INSERT INTO project_folders VALUES (?, ?, ?, ?, ?)');
+  insertFolder.run(
+    'project-1', workspaceDir, 'Primary marketing repo', 1,
+    '2026-07-01T12:00:00-05:00',
+  );
+  insertFolder.run(
+    'project-1', '/work/shared', 'Shared assets', 0,
+    '2026-07-02T12:00:00-05:00',
+  );
+  const insertRepo = db.prepare('INSERT INTO discovered_repos VALUES (?, ?, ?)');
+  insertRepo.run(workspaceDir, 'marketing', '2026-08-01T08:00:00-05:00');
+  insertRepo.run('/work/experimental', 'experimental', '2026-08-01T08:30:00-05:00');
   db.close();
 }
 
@@ -332,7 +341,7 @@ function completeJob(overrides) {
   };
 }
 
-async function createFullHome(fullDir) {
+async function createFullHome(fullDir, workspaceDir) {
   await fs.mkdir(fullDir, { recursive: true });
   await fs.writeFile(path.join(fullDir, 'config.yaml'), CONFIG_YAML, 'utf8');
   await fs.writeFile(
@@ -341,7 +350,7 @@ async function createFullHome(fullDir) {
     'utf8',
   );
 
-  createStateDatabase(path.join(fullDir, 'state.db'));
+  createStateDatabase(path.join(fullDir, 'state.db'), workspaceDir);
   const jobs = [
     completeJob({
       id: 'f0e1d2c3b4a5', name: 'daily-campaign-brief',
@@ -388,6 +397,16 @@ async function createFullHome(fullDir) {
     '# Cron Job: hourly-site-check\n\n**Job ID:** b1c2d3e4f5a6\n**Run Time:** 2026-08-01 08:00:00\n**Mode:** no_agent (script)\n\n---\n\nNewer synthetic site check passed.\n',
     'utf8',
   );
+  await fs.utimes(
+    path.join(outputDir, '2026-07-30_16-47-39.md'),
+    new Date('2026-07-30T21:47:39.000Z'),
+    new Date('2026-07-30T21:47:39.000Z'),
+  );
+  await fs.utimes(
+    path.join(outputDir, '2026-08-01_08-00-00.md'),
+    new Date('2026-08-01T13:00:00.000Z'),
+    new Date('2026-08-01T13:00:00.000Z'),
+  );
   await fs.writeFile(path.join(fullDir, 'cron', 'ticker_heartbeat'), '1785592816\n', 'utf8');
 
   await writeJson(path.join(fullDir, 'state', 'gateway.heartbeat'), {
@@ -416,7 +435,7 @@ async function createFullHome(fullDir) {
     },
     updated_at: '2026-08-01T14:00:30.000000+00:00',
   });
-  createProjectsDatabase(path.join(fullDir, 'projects.db'));
+  createProjectsDatabase(path.join(fullDir, 'projects.db'), workspaceDir);
 }
 
 /** Build deterministic sibling `full/` and `bare/` Hermes homes under rootDir. */
@@ -424,8 +443,22 @@ export async function genHermesHome(rootDir) {
   const destination = path.resolve(rootDir);
   const fullDir = path.join(destination, 'full');
   const bareDir = path.join(destination, 'bare');
+  const workspacePath = path.join(destination, 'workspace');
+  const workspaceFile = path.join(workspacePath, 'briefs', 'campaign-brief.txt');
+  await fs.mkdir(path.dirname(workspaceFile), { recursive: true });
+  const workspaceDir = await fs.realpath(workspacePath);
+  await fs.writeFile(
+    workspaceFile,
+    'Campaign: Synthetic Autumn Launch\nGoal: Exercise the Hermes workspace golden with deterministic text.\n',
+    'utf8',
+  );
+  await fs.utimes(
+    workspaceFile,
+    new Date('2026-08-01T14:00:00.000Z'),
+    new Date('2026-08-01T14:00:00.000Z'),
+  );
   await fs.mkdir(bareDir, { recursive: true });
   await fs.writeFile(path.join(bareDir, 'config.yaml'), BARE_CONFIG_YAML, 'utf8');
-  await createFullHome(fullDir);
-  return { fullDir, bareDir };
+  await createFullHome(fullDir, workspaceDir);
+  return { fullDir, bareDir, workspaceDir };
 }

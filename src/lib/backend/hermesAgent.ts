@@ -46,8 +46,18 @@ import type {
 export const SUPPORTED_MAX_HERMES_STATE_SCHEMA_VERSION = 23;
 export const CRON_SESSION_ID_PREFIX = 'cron_';
 
+export function isValidHermesJobId(jobId: string): boolean {
+  return /^[0-9a-f]{12}$/.test(jobId);
+}
+
+export function escapeHermesSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
 const GATEWAY_FRESHNESS_MS = 120_000;
 const CRON_SESSION_USAGE_MAX_DISTANCE_MS = 600_000;
+const MIN_REASONABLE_EPOCH_MS = Date.UTC(1990, 0, 1);
+const MAX_REASONABLE_EPOCH_MS = Date.UTC(2200, 0, 1);
 
 type JsonRecord = Record<string, unknown>;
 
@@ -99,16 +109,23 @@ function numberOrZero(value: unknown): number {
 
 export function toEpochMs(value: unknown, epochSeconds = false): number | null {
   if (value === null || value === undefined || value === '') return null;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) return null;
-    return epochSeconds || Math.abs(value) < 100_000_000_000 ? value * 1000 : value;
+  let epochMs: number;
+  if (typeof value === 'number' ||
+      (Number.isFinite(Number(value)) && String(value).trim() !== '')) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    epochMs = epochSeconds || Math.abs(numeric) < 100_000_000_000
+      ? numeric * 1000
+      : numeric;
+  } else {
+    epochMs = Date.parse(String(value));
   }
-  const numeric = Number(value);
-  if (Number.isFinite(numeric) && String(value).trim() !== '') {
-    return epochSeconds || Math.abs(numeric) < 100_000_000_000 ? numeric * 1000 : numeric;
-  }
-  const parsed = Date.parse(String(value));
-  return Number.isNaN(parsed) ? null : parsed;
+  // Hermes data is contemporary; reject corrupt values outside 1990–2200.
+  return Number.isFinite(epochMs) &&
+    epochMs >= MIN_REASONABLE_EPOCH_MS &&
+    epochMs <= MAX_REASONABLE_EPOCH_MS
+    ? epochMs
+    : null;
 }
 
 function parseYamlScalar(raw: string): unknown {
@@ -255,7 +272,7 @@ async function readJson(filePath: string): Promise<unknown | null> {
     return JSON.parse(await fsPromises.readFile(filePath, 'utf8')) as unknown;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    return null;
+    throw error;
   }
 }
 
@@ -322,22 +339,23 @@ function normalizeJob(raw: JsonRecord): CronJobConfig {
 }
 
 export function isCronSessionIdForJob(sessionId: string, jobId: string): boolean {
-  return sessionId.startsWith(`${CRON_SESSION_ID_PREFIX}${jobId}_`);
+  return isValidHermesJobId(jobId) &&
+    sessionId.startsWith(`${CRON_SESSION_ID_PREFIX}${jobId}_`);
 }
 
-function cronSessionTimestamp(sessionId: string, jobId: string): number | null {
+export function cronSessionTimestamp(sessionId: string, jobId: string): number | null {
   if (!isCronSessionIdForJob(sessionId, jobId)) return null;
   const suffix = sessionId.slice(`${CRON_SESSION_ID_PREFIX}${jobId}_`.length);
   const match = suffix.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
   if (!match) return null;
-  return Date.UTC(
+  return new Date(
     Number(match[1]),
     Number(match[2]) - 1,
     Number(match[3]),
     Number(match[4]),
     Number(match[5]),
     Number(match[6]),
-  );
+  ).getTime();
 }
 
 function sessionUsage(rows: SessionUsageRow[]): JsonRecord | null {
@@ -815,13 +833,18 @@ export class HermesAgentBackend implements AgentBackend {
   }
 
   private async cronSessionUsage(jobId: string, runTimestamp: number | null): Promise<JsonRecord | null> {
+    if (!isValidHermesJobId(jobId)) return null;
     return this.withStateDb(null, (db) => {
+      const sessionIdPrefix = `${CRON_SESSION_ID_PREFIX}${jobId}_`;
       const sessions = db.prepare(
         `SELECT id, started_at
          FROM sessions
-         WHERE id LIKE ?
+         WHERE id LIKE ? ESCAPE '\\'
          ORDER BY started_at DESC`,
-      ).all(`${CRON_SESSION_ID_PREFIX}${jobId}_%`) as Array<{ id: string; started_at: number | null }>;
+      ).all(`${escapeHermesSqlLike(sessionIdPrefix)}%`) as Array<{
+        id: string;
+        started_at: number | null;
+      }>;
       const matching = sessions.filter((session) => isCronSessionIdForJob(session.id, jobId));
       if (!matching.length || runTimestamp === null) return null;
       const selected = [...matching].sort((a, b) => {
@@ -855,6 +878,7 @@ export class HermesAgentBackend implements AgentBackend {
     jobId: string,
     limit: number,
   ): Promise<{ exists: boolean; runs: CronRun[] }> {
+    if (!isValidHermesJobId(jobId)) return { exists: false, runs: [] };
     const jobs = await this.listCronJobs();
     const exists = jobs.jobs.some((job) => job.id === jobId || job.jobId === jobId);
     const dbPath = path.join(this.homeDir, 'cron', 'executions.db');
@@ -902,7 +926,12 @@ export class HermesAgentBackend implements AgentBackend {
     jobId: string,
     bytes: number,
   ): Promise<{ content: string; modifiedAt: string } | null> {
-    const outputDir = path.join(this.homeDir, 'cron', 'output', jobId);
+    if (!isValidHermesJobId(jobId)) return null;
+    const homeRoot = realpathOrResolved(this.homeDir);
+    const outputRootPath = path.resolve(this.homeDir, 'cron', 'output');
+    const outputRoot = realpathOrResolved(outputRootPath);
+    const outputDir = realpathOrResolved(path.join(outputRootPath, jobId));
+    if (!pathContains(homeRoot, outputRoot) || !pathContains(outputRoot, outputDir)) return null;
     const names = await fsPromises.readdir(outputDir).catch(() => [] as string[]);
     const markdownNames = names.filter((name) => name.endsWith('.md')).sort().reverse();
     if (!markdownNames.length) return null;

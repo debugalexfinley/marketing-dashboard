@@ -19,6 +19,7 @@ const PATH_TOKEN = '<FIXTURE_PATH>';
 const REPO_TOKEN = '<REPO_PATH>';
 const STATE_TOKEN = '<STATE_PATH>';
 const TIMESTAMP_TOKEN = '<TIMESTAMP>';
+const HERMES_WORKSPACE_ROOT_TOKEN = 'workspace:<FIXTURE_WORKSPACE_ID>';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../../..');
@@ -148,13 +149,20 @@ async function stopServer(child) {
   }
 }
 
-function replacePaths(value, scratchDir) {
+function replacePaths(value, scratchDir, hermesWorkspaceRootId) {
+  let out = value;
+  if (hermesWorkspaceRootId) {
+    out = out
+      .split(encodeURIComponent(hermesWorkspaceRootId))
+      .join(encodeURIComponent(HERMES_WORKSPACE_ROOT_TOKEN))
+      .split(hermesWorkspaceRootId)
+      .join(HERMES_WORKSPACE_ROOT_TOKEN);
+  }
   const replacements = [
     [fixtureRoot, PATH_TOKEN],
     [scratchDir, STATE_TOKEN],
     [repoRoot, REPO_TOKEN],
   ].sort((a, b) => b[0].length - a[0].length);
-  let out = value;
   for (const [prefix, token] of replacements) {
     out = out.split(prefix).join(token);
   }
@@ -169,15 +177,17 @@ function isTimestampKey(key) {
     || key === 'ts';
 }
 
-function normalize(value, scratchDir, key = '') {
+function normalize(value, scratchDir, key = '', hermesWorkspaceRootId = null) {
   if (isTimestampKey(key) && value !== null) return TIMESTAMP_TOKEN;
-  if (typeof value === 'string') return replacePaths(value, scratchDir);
-  if (Array.isArray(value)) return value.map((item) => normalize(item, scratchDir));
+  if (typeof value === 'string') return replacePaths(value, scratchDir, hermesWorkspaceRootId);
+  if (Array.isArray(value)) {
+    return value.map((item) => normalize(item, scratchDir, '', hermesWorkspaceRootId));
+  }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([childKey, childValue]) => [
         childKey,
-        normalize(childValue, scratchDir, childKey),
+        normalize(childValue, scratchDir, childKey, hermesWorkspaceRootId),
       ]),
     );
   }
@@ -218,8 +228,12 @@ async function main() {
     await writeFile(fixturePgrep, '#!/bin/sh\nexit 1\n', 'utf8');
     await chmod(fixturePgrep, 0o755);
 
-    const hermesHome = args.backend === 'hermes'
-      ? (await genHermesHome(path.join(scratchDir, 'hermes-home'))).fullDir
+    const hermesFixture = args.backend === 'hermes'
+      ? await genHermesHome(path.join(scratchDir, 'hermes-home'))
+      : null;
+    const hermesHome = hermesFixture?.fullDir ?? null;
+    const hermesWorkspaceRootId = hermesFixture
+      ? `workspace:${Buffer.from(hermesFixture.workspaceDir).toString('base64url')}`
       : null;
     const hermesBin = path.join(
       repoRoot,
@@ -230,6 +244,8 @@ async function main() {
     const baseUrl = `http://127.0.0.1:${port}`;
     const env = {
       ...process.env,
+      TZ: 'America/Chicago',
+      LANG: 'en_US.UTF-8',
       PATH: `${fixtureBinDir}${path.delimiter}${process.env.PATH || ''}`,
       HERMES_OPENCLAW_HOME: fixtureRoot,
       HERMES_DEFAULT_INSTANCE: 'default',
@@ -299,7 +315,7 @@ async function main() {
     const workspaceQuery = args.backend === 'hermes'
       ? {
           instance: 'default',
-          rootId: 'workspace:L3dvcmsvYWNtZS9tYXJrZXRpbmc',
+          rootId: hermesWorkspaceRootId,
           path: 'briefs/campaign-brief.txt',
         }
       : {
@@ -344,7 +360,7 @@ async function main() {
         status: response.status,
         body_type: body.type,
         body: body.value,
-      }, scratchDir);
+      }, scratchDir, '', hermesWorkspaceRootId);
       const outputPath = path.join(outDir, `${routeSlug(route.path)}.json`);
       await writeFile(outputPath, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
       console.log(`${response.status} ${route.path} -> ${path.relative(repoRoot, outputPath)}`);

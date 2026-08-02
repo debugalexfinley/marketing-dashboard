@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,10 +11,14 @@ import { genHermesHome } from '../../../feature-research/hermes-port/fixtures/ge
 import type { HermesInstance } from '../instances';
 import { resolveBackend } from './index';
 import {
+  cronSessionTimestamp,
+  escapeHermesSqlLike,
   HermesAgentBackend,
   HermesSchemaVersionError,
   isCronSessionIdForJob,
+  isValidHermesJobId,
   parseHermesYaml,
+  toEpochMs,
 } from './hermesAgent';
 import type { CronJobConfig, SessionFileRef } from './types';
 
@@ -38,6 +43,7 @@ type StubInvocation = { argv: string[]; home: string };
 let tempRoot = '';
 let fullDir = '';
 let bareDir = '';
+let workspaceDir = '';
 let full: HermesAgentBackend;
 let bare: HermesAgentBackend;
 
@@ -113,7 +119,7 @@ function assertSingleArg(argv: string[], expected: string): void {
 
 before(async () => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agent-backend-'));
-  ({ fullDir, bareDir } = await genHermesHome(tempRoot));
+  ({ fullDir, bareDir, workspaceDir } = await genHermesHome(tempRoot));
   full = new HermesAgentBackend(instance('full-fixture', fullDir, 'fixture-profile'));
   bare = new HermesAgentBackend(instance('bare-fixture', bareDir, 'bare-profile'));
 });
@@ -152,10 +158,7 @@ test('agents and two-tier model routing use only whitelisted fixture config', as
   assert.equal(agents[0].id, 'fixture-profile');
   assert.equal(agents[0].description, 'Synthetic full Hermes profile for adapter tests.');
   assert.equal(agents[0].model, 'grok-4.5');
-  assert.equal(
-    agents[0].gatewayRunning,
-    Math.abs(Date.now() - FIXED_HEARTBEAT_MS) <= 120_000,
-  );
+  assert.equal(agents[0].gatewayRunning, false);
   assert.deepEqual(await full.listConfiguredAgents(), agents);
 
   assert.deepEqual(await full.readModelRouting(), {
@@ -172,17 +175,29 @@ test('agents and two-tier model routing use only whitelisted fixture config', as
   }]);
 });
 
-test('fresh heartbeat positively marks a generated profile as running', async () => {
-  const homeDir = path.join(tempRoot, 'fresh-heartbeat');
-  fs.mkdirSync(path.join(homeDir, 'state'), { recursive: true });
-  fs.writeFileSync(path.join(homeDir, 'config.yaml'), 'model:\n  default: fresh-model\n');
-  fs.writeFileSync(path.join(homeDir, 'state', 'gateway.heartbeat'), JSON.stringify({
-    pid: 9001,
-    updated_at: new Date().toISOString(),
-  }));
+test('gateway freshness accepts 30 seconds and rejects five minutes', async () => {
+  const now = Date.now();
+  const cases = [
+    { id: 'fresh-heartbeat', ageMs: 30_000, expected: true },
+    { id: 'stale-heartbeat', ageMs: 300_000, expected: false },
+  ];
+  for (const fixture of cases) {
+    const homeDir = path.join(tempRoot, fixture.id);
+    fs.mkdirSync(path.join(homeDir, 'state'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, 'config.yaml'), 'model:\n  default: fresh-model\n');
+    fs.writeFileSync(path.join(homeDir, 'state', 'gateway.heartbeat'), JSON.stringify({
+      pid: 9001,
+      updated_at: new Date(now - fixture.ageMs).toISOString(),
+    }));
 
-  const [agent] = await new HermesAgentBackend(instance('fresh', homeDir)).listAgents();
-  assert.equal(agent.gatewayRunning, true);
+    const [agent] = await new HermesAgentBackend(instance(fixture.id, homeDir)).listAgents();
+    assert.equal(agent.gatewayRunning, fixture.expected);
+  }
+});
+
+test('timestamp normalization rejects absurd epoch magnitudes', () => {
+  assert.equal(toEpochMs(Number.MAX_SAFE_INTEGER), null);
+  assert.equal(toEpochMs(0.001, true), null);
 });
 
 test('cron jobs preserve unknown fields, normalize timestamps, and surface delivery errors', async () => {
@@ -204,6 +219,17 @@ test('cron jobs preserve unknown fields, normalize timestamps, and surface deliv
   assert.equal((await full.readCronJobsTolerant()).length, 3);
   assert.equal((await full.readRawCronJobs()).length, 3);
   assert.equal(await full.readCronNotificationJobs(), null);
+});
+
+test('cron jobs stay empty when missing but fail loudly when jobs.json is corrupt', async () => {
+  assert.deepEqual(await bare.listCronJobs(), { jobs: [] });
+  const homeDir = path.join(tempRoot, 'corrupt-jobs-home');
+  fs.mkdirSync(path.join(homeDir, 'cron'), { recursive: true });
+  fs.writeFileSync(path.join(homeDir, 'config.yaml'), 'model:\n  default: fixture\n');
+  fs.writeFileSync(path.join(homeDir, 'cron', 'jobs.json'), '{not valid json');
+  const backend = new HermesAgentBackend(instance('corrupt-jobs', homeDir));
+
+  await assert.rejects(backend.listCronJobs(), SyntaxError);
 });
 
 test('N2 argv integrity: writeCronJobs create preserves adversarial name and prompt', async () => {
@@ -289,6 +315,76 @@ test('N2 argv integrity: sendAgentMessage preserves an adversarial message', asy
   assertSingleArg(argv, ADVERSARIAL_MESSAGE);
 });
 
+test('cron-mutating stub commands create the jobs lock artifact', async () => {
+  const backend = cliBackend('stub-lock');
+  const lockPath = path.join(backend.homeDir, 'cron', '.jobs.lock');
+  const assertCreated = () => {
+    assert.equal(fs.existsSync(lockPath), true);
+    fs.unlinkSync(lockPath);
+  };
+  const previous = process.env.HERMES_ALLOW_CRON_WRITE;
+  process.env.HERMES_ALLOW_CRON_WRITE = 'true';
+  try {
+    await backend.upsertCronJob({
+      name: 'Lock fixture',
+      prompt: 'Create the lock fixture.',
+      enabled: true,
+      schedule: { kind: 'interval', everyMs: 30 * 60_000 },
+    });
+    assertCreated();
+
+    const [created] = (await backend.listCronJobs()).jobs;
+    await backend.upsertCronJob({ ...created, name: 'Edited lock fixture' });
+    assertCreated();
+
+    await backend.toggleCronJob(String(created.id), false);
+    assertCreated();
+    await backend.toggleCronJob(String(created.id), true);
+    assertCreated();
+
+    await backend.writeCronJobs({ jobs: [] });
+    assert.equal(fs.existsSync(lockPath), true);
+    assert.equal(
+      fs.readdirSync(path.dirname(lockPath)).some((name) => name.startsWith('jobs.json.tmp.')),
+      false,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.HERMES_ALLOW_CRON_WRITE;
+    else process.env.HERMES_ALLOW_CRON_WRITE = previous;
+  }
+});
+
+test('sendAgentMessage parses failed usage details from a non-zero stub exit', async () => {
+  const backend = cliBackend('stub-oneshot-failure');
+  const result = await backend.sendAgentMessage(
+    'fixture-agent',
+    'Exercise HERMES_STUB_FORCE_FAILURE for the adapter.',
+  );
+  const details = result.details as Record<string, unknown>;
+
+  assert.equal(result.ok, false);
+  assert.notEqual(result.code, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /Hermes stub forced failure/);
+  assert.equal(details.completed, false);
+  assert.equal(details.failed, true);
+  assert.equal(typeof details.failure, 'string');
+  assert.ok(String(details.failure).length > 0);
+});
+
+test('Hermes stub refuses a home outside the OS temp directory before writing', () => {
+  const guardedHome = path.join(process.cwd(), '.hermes-stub-guard-should-not-exist');
+  assert.equal(fs.existsSync(guardedHome), false);
+  const result = spawnSync(HERMES_STUB_BIN, ['doctor'], {
+    encoding: 'utf8',
+    env: { ...process.env, HERMES_HOME: guardedHome },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /refusing to use Hermes home outside OS temp directory/);
+  assert.equal(fs.existsSync(guardedHome), false);
+});
+
 test('cron executions normalize offset timestamps and enrich the guarded session match', async () => {
   const info = await full.readCronRunsInfo(CRON_SESSION_JOB_ID, 10);
   assert.equal(info.exists, true);
@@ -331,6 +427,45 @@ test('cron session join guard is anchored to the exact prefix', () => {
   assert.equal(isCronSessionIdForJob('cron_other_a9ce2d311889_123', CRON_SESSION_JOB_ID), false);
 });
 
+test('Hermes job ids and SQL LIKE values reject widening metacharacters', () => {
+  assert.equal(isValidHermesJobId(CRON_SESSION_JOB_ID), true);
+  assert.equal(isValidHermesJobId('aaaaaaaaaa%%'), false);
+  assert.equal(escapeHermesSqlLike('a%b_c\\d'), 'a\\%b\\_c\\\\d');
+});
+
+test('cron session suffix timestamps use local wall-clock time', () => {
+  const sessionId = `cron_${CRON_SESSION_JOB_ID}_20260801_090016`;
+  const localTimestamp = new Date(2026, 7, 1, 9, 0, 16).getTime();
+  const utcTimestamp = Date.UTC(2026, 7, 1, 9, 0, 16);
+  assert.notEqual(localTimestamp, utcTimestamp, 'test requires a non-UTC process timezone');
+  assert.equal(cronSessionTimestamp(sessionId, CRON_SESSION_JOB_ID), localTimestamp);
+});
+
+test('cron session usage falls back to the local-time id suffix when started_at is null', async () => {
+  const homeDir = path.join(tempRoot, 'cron-local-time-fallback');
+  fs.mkdirSync(path.join(homeDir, 'cron'), { recursive: true });
+  fs.copyFileSync(path.join(fullDir, 'config.yaml'), path.join(homeDir, 'config.yaml'));
+  fs.copyFileSync(path.join(fullDir, 'state.db'), path.join(homeDir, 'state.db'));
+  fs.copyFileSync(
+    path.join(fullDir, 'cron', 'jobs.json'),
+    path.join(homeDir, 'cron', 'jobs.json'),
+  );
+  fs.copyFileSync(
+    path.join(fullDir, 'cron', 'executions.db'),
+    path.join(homeDir, 'cron', 'executions.db'),
+  );
+  const db = new Database(path.join(homeDir, 'state.db'));
+  db.prepare('UPDATE sessions SET started_at = NULL WHERE id = ?')
+    .run(`cron_${CRON_SESSION_JOB_ID}_20260801_090016`);
+  db.close();
+
+  const backend = new HermesAgentBackend(instance('cron-local-fallback', homeDir));
+  const linked = (await backend.readCronRuns(CRON_SESSION_JOB_ID, 10))
+    .find((run) => run.id === '44444444444444444444444444444444')!;
+  assert.equal(linked.sessionId, `cron_${CRON_SESSION_JOB_ID}_20260801_090016`);
+  assert.equal(linked.totalTokens, 2_606);
+});
+
 test('cron log reads newest output first and returns interface empty cases', async () => {
   const info = await full.readCronLogInfo(SCRIPT_JOB_ID, 10_000);
   assert.ok(info);
@@ -338,9 +473,41 @@ test('cron log reads newest output first and returns interface empty cases', asy
   const newerIndex = info.content.indexOf('Newer synthetic site check passed.');
   const olderIndex = info.content.indexOf('Older synthetic site check passed.');
   assert.ok(newerIndex >= 0 && olderIndex > newerIndex);
-  assert.equal(typeof Date.parse(info.modifiedAt), 'number');
+  assert.ok(Number.isFinite(Date.parse(info.modifiedAt)));
+  const newestPath = path.join(
+    fullDir,
+    'cron',
+    'output',
+    SCRIPT_JOB_ID,
+    '2026-08-01_08-00-00.md',
+  );
+  assert.equal(info.modifiedAt, fs.statSync(newestPath).mtime.toISOString());
   assert.equal(await full.tailCronLog('missing-job', 100), '');
   assert.equal(await full.readCronLogInfo('missing-job', 100), null);
+});
+
+test('cron log job ids cannot traverse outside the Hermes output directory', async () => {
+  const homeDir = path.join(tempRoot, 'g1', 'home');
+  const escapedDir = path.resolve(homeDir, 'cron', 'output', '../../../../etc');
+  fs.mkdirSync(escapedDir, { recursive: true });
+  fs.writeFileSync(path.join(escapedDir, 'leaked.md'), 'outside fixture content');
+  const backend = new HermesAgentBackend(instance('g1-traversal', homeDir));
+
+  assert.equal(await backend.readCronLogInfo('../../../../etc', 100), null);
+  assert.equal(await backend.tailCronLog('../../../../etc', 100), '');
+  assert.equal(await backend.readCronLogInfo('/etc/passwd', 100), null);
+  assert.equal(
+    await backend.readCronLogInfo('b1c2d3e4f5a6/../../../../etc', 100),
+    null,
+  );
+});
+
+test('wildcard-laden cron job ids return empty usage and runs', async () => {
+  assert.deepEqual(await full.readCronRunsInfo('aaaaaaaaaa%%', 10), {
+    exists: false,
+    runs: [],
+  });
+  assert.deepEqual(await full.readCronRuns('aaaaaaaaaa%%', 10), []);
 });
 
 test('sessions fabricate stable refs, page by message rowid, and normalize epoch seconds', async () => {
@@ -415,8 +582,27 @@ test('session usage aggregates model rows and lets unknown cost status win', asy
   assert.equal(usage.estimated_cost_usd, 0.0351);
   assert.equal(usage.actual_cost_usd, null);
   assert.equal(usage.cost_status, 'unknown');
-  assert.ok(usage.tokens_today >= 0);
-  assert.ok(usage.tokens_week >= 0);
+});
+
+test('session usage computes exact today and seven-day token buckets', async () => {
+  const now = Date.now();
+  const homeDir = path.join(tempRoot, 'current-usage-home');
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.copyFileSync(path.join(fullDir, 'config.yaml'), path.join(homeDir, 'config.yaml'));
+  fs.copyFileSync(path.join(fullDir, 'state.db'), path.join(homeDir, 'state.db'));
+  const db = new Database(path.join(homeDir, 'state.db'));
+  db.prepare('UPDATE sessions SET started_at = ? WHERE id = ?')
+    .run((now - 8 * 24 * 60 * 60 * 1000) / 1000, '20260730_164700_cli00001');
+  db.prepare('UPDATE sessions SET started_at = ? WHERE id = ?')
+    .run((now - 3 * 24 * 60 * 60 * 1000) / 1000, '20260731_101500_discord1');
+  db.prepare('UPDATE sessions SET started_at = ? WHERE id = ?')
+    .run(now / 1000, `cron_${CRON_SESSION_JOB_ID}_20260801_090016`);
+  db.close();
+
+  const usage = await new HermesAgentBackend(instance('current-usage', homeDir))
+    .readSessionUsage('current-usage');
+  assert.equal(usage.tokens_today, 2_606);
+  assert.equal(usage.tokens_week, 3_735);
 });
 
 test('gateway health combines optional files and normalizes UTC ISO timestamps', async () => {
@@ -482,17 +668,21 @@ test('workspace roots union projects and session paths with guarded writable res
   const roots = await full.listWorkspaceRoots();
   const rootPaths = await Promise.all(roots.map((root) => full.resolveWorkspacePath(root.id, '')));
   assert.deepEqual(rootPaths, [
-    '/work/acme/marketing',
+    workspaceDir,
     '/work/experimental',
     '/work/shared',
-  ]);
+  ].sort((left, right) => left.localeCompare(right)));
   assert.ok(roots.every((root) => root.kind === 'workspace' && root.writable === true));
   await assert.rejects(full.resolveWorkspacePath(roots[0].id, '../secret'), /Invalid path/);
-  assert.deepEqual(await full.readWorkspace(roots[0].id, ''), {
-    root: { ...roots[0], abs: '/work/acme/marketing' },
-    type: 'error',
-    error: 'Not found',
-  });
+  const workspaceIndex = rootPaths.indexOf(workspaceDir);
+  const file = await full.readWorkspace(roots[workspaceIndex].id, 'briefs/campaign-brief.txt');
+  assert.equal(file.type, 'file');
+  if (file.type === 'file') {
+    assert.equal(
+      file.content,
+      'Campaign: Synthetic Autumn Launch\nGoal: Exercise the Hermes workspace golden with deterministic text.\n',
+    );
+  }
 });
 
 test('workspace roots exclude the Hermes home and descendants from every root source', async () => {

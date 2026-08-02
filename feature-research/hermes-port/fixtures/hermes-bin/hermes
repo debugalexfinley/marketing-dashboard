@@ -70,17 +70,25 @@ function readJobs(home) {
 }
 
 function writeJobs(jobsPath, document) {
-  fs.mkdirSync(path.dirname(jobsPath), { recursive: true });
+  const cronDir = path.dirname(jobsPath);
+  fs.mkdirSync(cronDir, { recursive: true });
+  fs.closeSync(fs.openSync(path.join(cronDir, '.jobs.lock'), 'a'));
   const current = typeof document.updated_at === 'number'
     ? document.updated_at
     : Date.parse(String(document.updated_at));
   const base = Number.isFinite(current) ? current : FIXED_UPDATED_AT_MS;
   const updated_at = new Date(base + 1_000).toISOString();
-  fs.writeFileSync(
-    jobsPath,
-    `${JSON.stringify({ ...document, updated_at }, null, 2)}\n`,
-    'utf8',
-  );
+  const tempPath = `${jobsPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(
+      tempPath,
+      `${JSON.stringify({ ...document, updated_at }, null, 2)}\n`,
+      'utf8',
+    );
+    fs.renameSync(tempPath, jobsPath);
+  } finally {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  }
 }
 
 function parseFlags(args) {
@@ -133,6 +141,8 @@ function runOneShot(args) {
   const usageIndex = args.indexOf('--usage-file');
   const usagePath = usageIndex === -1 ? null : args[usageIndex + 1];
   if (!usagePath) throw new Error('Hermes stub oneshot requires --usage-file <path>');
+  // Magic substring used only by adapter tests to exercise a failed -z usage report.
+  const forceFailure = String(args[1] ?? '').includes('HERMES_STUB_FORCE_FAILURE');
   fs.mkdirSync(path.dirname(path.resolve(usagePath)), { recursive: true });
   fs.writeFileSync(
     path.resolve(usagePath),
@@ -150,12 +160,18 @@ function runOneShot(args) {
       model: 'grok-4.5',
       provider: 'xai-oauth',
       session_id: 'stub_oneshot_session_0001',
-      completed: true,
-      failed: false,
+      completed: !forceFailure,
+      failed: forceFailure,
       service_tier: 'fixture',
+      ...(forceFailure ? { failure: 'Synthetic forced one-shot failure' } : {}),
     }, null, 2)}\n`,
     'utf8',
   );
+  if (forceFailure) {
+    console.error('Hermes stub forced failure: synthetic one-shot failure');
+    process.exitCode = 1;
+    return;
+  }
   console.log('This is a canned Hermes stub reply.');
 }
 

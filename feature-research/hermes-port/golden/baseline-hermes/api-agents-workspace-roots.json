@@ -7,7 +7,7 @@
     "instance": "default",
     "roots": [
       {
-        "id": "workspace:L3dvcmsvYWNtZS9tYXJrZXRpbmc",
+        "id": "workspace:<FIXTURE_WORKSPACE_ID>",
         "label": "marketing",
         "kind": "workspace",
         "writable": true
