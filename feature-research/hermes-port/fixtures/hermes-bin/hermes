@@ -3,6 +3,7 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const FIXED_UPDATED_AT_MS = 1_785_625_200_000;
@@ -14,14 +15,30 @@ if (!process.stdin.isTTY) {
   process.stdin.unref?.();
 }
 
-function extractHomeFlag(argv) {
+function extractGlobalFlags(argv) {
   const args = [...argv];
-  const index = args.indexOf('--home');
-  if (index === -1) return { args, homeFlag: null };
-  const homeFlag = args[index + 1];
-  if (!homeFlag) throw new Error('--home requires a directory');
-  args.splice(index, 2);
+  let homeFlag = null;
+  for (let index = 0; index < args.length;) {
+    const flag = args[index];
+    if (flag !== '--home' && flag !== '-p' && flag !== '--profile') {
+      index += 1;
+      continue;
+    }
+    const value = args[index + 1];
+    if (!value) throw new Error(`${flag} requires a value`);
+    if (flag === '--home') homeFlag = value;
+    args.splice(index, 2);
+  }
   return { args, homeFlag };
+}
+
+function assertTempHome(home) {
+  const resolvedHome = path.resolve(home);
+  const realHome = fs.existsSync(resolvedHome) ? fs.realpathSync(resolvedHome) : resolvedHome;
+  const realTemp = fs.realpathSync(os.tmpdir());
+  if (realHome !== realTemp && !realHome.startsWith(`${realTemp}${path.sep}`)) {
+    throw new Error(`refusing to use Hermes home outside OS temp directory: ${resolvedHome}`);
+  }
 }
 
 function appendInvocationLog(logPath, home) {
@@ -37,7 +54,10 @@ function appendInvocationLog(logPath, home) {
 function readJobs(home) {
   const jobsPath = path.join(home, 'cron', 'jobs.json');
   if (!fs.existsSync(jobsPath)) {
-    return { jobsPath, document: { jobs: [], updated_at: FIXED_UPDATED_AT_MS } };
+    return {
+      jobsPath,
+      document: { jobs: [], updated_at: new Date(FIXED_UPDATED_AT_MS).toISOString() },
+    };
   }
   const parsed = JSON.parse(fs.readFileSync(jobsPath, 'utf8'));
   return {
@@ -51,8 +71,11 @@ function readJobs(home) {
 
 function writeJobs(jobsPath, document) {
   fs.mkdirSync(path.dirname(jobsPath), { recursive: true });
-  const current = Number(document.updated_at);
-  const updated_at = Number.isFinite(current) ? current + 1 : FIXED_UPDATED_AT_MS;
+  const current = typeof document.updated_at === 'number'
+    ? document.updated_at
+    : Date.parse(String(document.updated_at));
+  const base = Number.isFinite(current) ? current : FIXED_UPDATED_AT_MS;
+  const updated_at = new Date(base + 1_000).toISOString();
   fs.writeFileSync(
     jobsPath,
     `${JSON.stringify({ ...document, updated_at }, null, 2)}\n`,
@@ -245,8 +268,9 @@ function runCron(home, args) {
 }
 
 try {
-  const { args, homeFlag } = extractHomeFlag(rawArgv);
+  const { args, homeFlag } = extractGlobalFlags(rawArgv);
   const home = path.resolve(process.env.HERMES_HOME || homeFlag || process.cwd());
+  assertTempHome(home);
   appendInvocationLog(process.env.HERMES_STUB_LOG, home);
 
   if (args[0] === '-z') {

@@ -372,7 +372,7 @@ async function createFullHome(fullDir) {
   ];
   await writeJson(path.join(fullDir, 'cron', 'jobs.json'), {
     jobs,
-    updated_at: FIXED_UPDATED_AT_MS,
+    updated_at: new Date(FIXED_UPDATED_AT_MS).toISOString(),
   });
   createExecutionsDatabase(path.join(fullDir, 'cron', 'executions.db'));
 

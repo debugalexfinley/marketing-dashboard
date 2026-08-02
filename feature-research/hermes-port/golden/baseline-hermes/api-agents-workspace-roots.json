@@ -10,19 +10,19 @@
         "id": "workspace:L3dvcmsvYWNtZS9tYXJrZXRpbmc",
         "label": "marketing",
         "kind": "workspace",
-        "writable": false
+        "writable": true
       },
       {
         "id": "workspace:L3dvcmsvZXhwZXJpbWVudGFs",
         "label": "experimental",
         "kind": "workspace",
-        "writable": false
+        "writable": true
       },
       {
         "id": "workspace:L3dvcmsvc2hhcmVk",
         "label": "Shared assets",
         "kind": "workspace",
-        "writable": false
+        "writable": true
       }
     ]
   }

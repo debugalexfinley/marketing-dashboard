@@ -15,7 +15,7 @@ import {
   isCronSessionIdForJob,
   parseHermesYaml,
 } from './hermesAgent';
-import type { SessionFileRef } from './types';
+import type { CronJobConfig, SessionFileRef } from './types';
 
 const FIXED_UPDATED_AT_MS = 1_785_625_200_000;
 const FIXED_HEARTBEAT_MS = Date.parse('2026-08-01T14:00:30.000000+00:00');
@@ -26,6 +26,14 @@ const CONFIG_SECRET = 'SENTINEL_DO_NOT_LEAK_9f8a7b';
 const CONFIG_PROMPT_SECRET = 'CONFIG_SYSTEM_PROMPT_SENTINEL_DO_NOT_LEAK';
 const SESSION_PROMPT_SECRET = 'SYSTEM_PROMPT_SENTINEL_';
 const ORIGIN_SECRET = 'ORIGIN_SENTINEL_DO_NOT_LEAK';
+const HERMES_STUB_BIN = path.resolve(
+  'feature-research/hermes-port/fixtures/hermes-bin/hermes',
+);
+const ADVERSARIAL_NAME = 'name ; rm -rf / `id` $(id) \'single\' "double"\nnext-name';
+const ADVERSARIAL_PROMPT = 'prompt ; rm -rf / `id` $(id) \'single\' "double"\nnext-prompt';
+const ADVERSARIAL_MESSAGE = 'message ; rm -rf / `id` $(id) \'single\' "double"\nnext-message';
+
+type StubInvocation = { argv: string[]; home: string };
 
 let tempRoot = '';
 let fullDir = '';
@@ -53,6 +61,54 @@ function emptyRef(agentId = 'bare'): SessionFileRef {
     mtimeMs: 0,
     size: 0,
   };
+}
+
+function cliBackend(id: string): HermesAgentBackend {
+  const homeDir = path.join(tempRoot, id);
+  fs.mkdirSync(homeDir, { recursive: true });
+  return new HermesAgentBackend({
+    ...instance(id, homeDir),
+    hermesBin: HERMES_STUB_BIN,
+  });
+}
+
+async function captureStubInvocations(
+  name: string,
+  operation: () => Promise<unknown>,
+): Promise<StubInvocation[]> {
+  const logPath = path.join(tempRoot, `${name}.jsonl`);
+  assert.equal(fs.existsSync(logPath), false, 'stub log path must be fresh');
+  const previousLog = process.env.HERMES_STUB_LOG;
+  process.env.HERMES_STUB_LOG = logPath;
+  try {
+    await operation();
+    return fs.readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as StubInvocation);
+  } finally {
+    if (previousLog === undefined) delete process.env.HERMES_STUB_LOG;
+    else process.env.HERMES_STUB_LOG = previousLog;
+  }
+}
+
+async function captureCronStubInvocations(
+  name: string,
+  operation: () => Promise<unknown>,
+): Promise<StubInvocation[]> {
+  const previous = process.env.HERMES_ALLOW_CRON_WRITE;
+  process.env.HERMES_ALLOW_CRON_WRITE = 'true';
+  try {
+    return await captureStubInvocations(name, operation);
+  } finally {
+    if (previous === undefined) delete process.env.HERMES_ALLOW_CRON_WRITE;
+    else process.env.HERMES_ALLOW_CRON_WRITE = previous;
+  }
+}
+
+function assertSingleArg(argv: string[], expected: string): void {
+  assert.equal(argv.filter((arg) => arg === expected).length, 1);
 }
 
 before(async () => {
@@ -150,6 +206,89 @@ test('cron jobs preserve unknown fields, normalize timestamps, and surface deliv
   assert.equal(await full.readCronNotificationJobs(), null);
 });
 
+test('N2 argv integrity: writeCronJobs create preserves adversarial name and prompt', async () => {
+  const backend = cliBackend('n2-write-create');
+  const job: CronJobConfig = {
+    name: ADVERSARIAL_NAME,
+    prompt: ADVERSARIAL_PROMPT,
+    enabled: true,
+    schedule: { kind: 'interval', everyMs: 15 * 60_000 },
+  };
+  const invocations = await captureCronStubInvocations(
+    'n2-write-create',
+    () => backend.writeCronJobs({ jobs: [job] }),
+  );
+
+  assert.equal(invocations.length, 1);
+  const { argv } = invocations[0];
+  assert.deepEqual(argv.slice(0, 3), ['cron', 'create', 'every 15m']);
+  assert.equal(argv[3], ADVERSARIAL_PROMPT);
+  assert.equal(argv[argv.indexOf('--name') + 1], ADVERSARIAL_NAME);
+  assertSingleArg(argv, ADVERSARIAL_PROMPT);
+  assertSingleArg(argv, ADVERSARIAL_NAME);
+});
+
+test('N2 argv integrity: upsertCronJob create preserves adversarial name and prompt', async () => {
+  const backend = cliBackend('n2-upsert-create');
+  const job: CronJobConfig = {
+    name: ADVERSARIAL_NAME,
+    prompt: ADVERSARIAL_PROMPT,
+    enabled: true,
+    schedule: { kind: 'interval', everyMs: 20 * 60_000 },
+  };
+  const invocations = await captureCronStubInvocations(
+    'n2-upsert-create',
+    () => backend.upsertCronJob(job),
+  );
+
+  assert.equal(invocations.length, 1);
+  const { argv } = invocations[0];
+  assert.deepEqual(argv.slice(0, 3), ['cron', 'create', 'every 20m']);
+  assert.equal(argv[3], ADVERSARIAL_PROMPT);
+  assert.equal(argv[argv.indexOf('--name') + 1], ADVERSARIAL_NAME);
+  assertSingleArg(argv, ADVERSARIAL_PROMPT);
+  assertSingleArg(argv, ADVERSARIAL_NAME);
+});
+
+test('N2 argv integrity: cron edit preserves adversarial name and prompt changes', async () => {
+  const backend = cliBackend('n2-edit');
+  await captureCronStubInvocations('n2-edit-setup', () => backend.upsertCronJob({
+    name: 'Benign starting name',
+    prompt: 'Benign starting prompt',
+    enabled: true,
+    schedule: { kind: 'interval', everyMs: 25 * 60_000 },
+  }));
+  const [current] = (await backend.listCronJobs()).jobs;
+  const invocations = await captureCronStubInvocations('n2-edit', () => backend.upsertCronJob({
+    ...current,
+    name: ADVERSARIAL_NAME,
+    prompt: ADVERSARIAL_PROMPT,
+  }));
+
+  assert.equal(invocations.length, 1);
+  const { argv } = invocations[0];
+  assert.deepEqual(argv.slice(0, 2), ['cron', 'edit']);
+  assert.equal(argv[argv.indexOf('--prompt') + 1], ADVERSARIAL_PROMPT);
+  assert.equal(argv[argv.indexOf('--name') + 1], ADVERSARIAL_NAME);
+  assertSingleArg(argv, ADVERSARIAL_PROMPT);
+  assertSingleArg(argv, ADVERSARIAL_NAME);
+});
+
+test('N2 argv integrity: sendAgentMessage preserves an adversarial message', async () => {
+  const backend = cliBackend('n2-message');
+  const invocations = await captureStubInvocations(
+    'n2-message',
+    () => backend.sendAgentMessage('fixture-agent', ADVERSARIAL_MESSAGE),
+  );
+
+  assert.equal(invocations.length, 1);
+  const { argv } = invocations[0];
+  assert.equal(argv[0], '-z');
+  assert.equal(argv[1], ADVERSARIAL_MESSAGE);
+  assert.equal(argv[2], '--usage-file');
+  assertSingleArg(argv, ADVERSARIAL_MESSAGE);
+});
+
 test('cron executions normalize offset timestamps and enrich the guarded session match', async () => {
   const info = await full.readCronRunsInfo(CRON_SESSION_JOB_ID, 10);
   assert.equal(info.exists, true);
@@ -168,6 +307,19 @@ test('cron executions normalize offset timestamps and enrich the guarded session
     exists: false,
     runs: [],
   });
+});
+
+test('cron usage only joins a session within ten minutes of the run', async () => {
+  const runs = await full.readCronRuns(CRON_SESSION_JOB_ID, 10);
+  const far = runs.find((run) => run.id === '33333333333333333333333333333333')!;
+  const close = runs.find((run) => run.id === '44444444444444444444444444444444')!;
+
+  assert.equal(far.sessionId, undefined);
+  assert.equal(far.estimatedCostUsd, undefined);
+  assert.equal(far.totalTokens, undefined);
+  assert.equal(close.sessionId, 'cron_a9ce2d311889_20260801_090016');
+  assert.equal(close.estimatedCostUsd, 0.0214);
+  assert.equal(close.totalTokens, 2_606);
 });
 
 test('cron session join guard is anchored to the exact prefix', () => {
@@ -208,6 +360,50 @@ test('sessions fabricate stable refs, page by message rowid, and normalize epoch
   assert.equal(first.nextOffset, 5);
   const unchanged = await full.readSessionEntries(cli, first.nextOffset);
   assert.deepEqual(unchanged, { entries: [], nextOffset: 5 });
+});
+
+test('session refs and entry offsets stay in rowid units across two sync passes', async () => {
+  const homeDir = path.join(tempRoot, 'session-cursor-home');
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.copyFileSync(path.join(fullDir, 'config.yaml'), path.join(homeDir, 'config.yaml'));
+  fs.copyFileSync(path.join(fullDir, 'state.db'), path.join(homeDir, 'state.db'));
+  const sessionId = '20260730_164700_cli00001';
+  const db = new Database(path.join(homeDir, 'state.db'));
+  db.transaction(() => {
+    for (let id = 5; id >= 1; id -= 1) {
+      db.prepare('UPDATE messages SET id = ? WHERE id = ?').run(id + 1_000, id);
+    }
+  })();
+  db.close();
+  const backend = new HermesAgentBackend(instance('session-cursor', homeDir));
+  const offsets = new Map<string, number>();
+  const syncPass = async () => {
+    const imported = [];
+    for (const ref of await backend.readSessions('session-cursor')) {
+      if (ref.sessionId !== sessionId) continue;
+      const lastOffset = offsets.get(ref.sessionId) ?? 0;
+      if (ref.size <= lastOffset) continue;
+      const result = await backend.readSessionEntries(ref, lastOffset);
+      imported.push(...result.entries);
+      offsets.set(ref.sessionId, result.nextOffset);
+    }
+    return imported;
+  };
+
+  const first = await syncPass();
+  assert.equal(first.length, 5);
+  assert.equal(offsets.get(sessionId), 1_005);
+
+  const writer = new Database(path.join(homeDir, 'state.db'));
+  writer.prepare(
+    `INSERT INTO messages (id, session_id, role, content, timestamp, active, compacted)
+     VALUES (?, ?, ?, ?, ?, 1, 0)`,
+  ).run(1_006, sessionId, 'assistant', 'New message after first sync.', 1_785_448_120);
+  writer.close();
+
+  const second = await syncPass();
+  assert.deepEqual(second.map((entry) => entry.id), ['1006']);
+  assert.equal(offsets.get(sessionId), 1_006);
 });
 
 test('session usage aggregates model rows and lets unknown cost status win', async () => {
@@ -282,7 +478,7 @@ test('backend resolver constructs and caches HermesAgentBackend instances', () =
   }
 });
 
-test('workspace roots union projects and session paths with guarded read-only resolution', async () => {
+test('workspace roots union projects and session paths with guarded writable resolution', async () => {
   const roots = await full.listWorkspaceRoots();
   const rootPaths = await Promise.all(roots.map((root) => full.resolveWorkspacePath(root.id, '')));
   assert.deepEqual(rootPaths, [
@@ -290,13 +486,81 @@ test('workspace roots union projects and session paths with guarded read-only re
     '/work/experimental',
     '/work/shared',
   ]);
-  assert.ok(roots.every((root) => root.kind === 'workspace' && root.writable === false));
+  assert.ok(roots.every((root) => root.kind === 'workspace' && root.writable === true));
   await assert.rejects(full.resolveWorkspacePath(roots[0].id, '../secret'), /Invalid path/);
   assert.deepEqual(await full.readWorkspace(roots[0].id, ''), {
     root: { ...roots[0], abs: '/work/acme/marketing' },
     type: 'error',
     error: 'Not found',
   });
+});
+
+test('workspace roots exclude the Hermes home and descendants from every root source', async () => {
+  const baseDir = path.join(tempRoot, 'workspace-curation');
+  const homeDir = path.join(baseDir, 'hermes-home');
+  const insideHome = path.join(homeDir, 'workspace');
+  const safeDir = path.join(baseDir, 'safe-workspace');
+  fs.mkdirSync(insideHome, { recursive: true });
+  fs.mkdirSync(safeDir, { recursive: true });
+  fs.copyFileSync(path.join(fullDir, 'config.yaml'), path.join(homeDir, 'config.yaml'));
+  fs.copyFileSync(path.join(fullDir, 'state.db'), path.join(homeDir, 'state.db'));
+
+  const state = new Database(path.join(homeDir, 'state.db'));
+  state.prepare('UPDATE sessions SET cwd = NULL, git_repo_root = NULL').run();
+  state.prepare('UPDATE sessions SET cwd = ?, git_repo_root = ? WHERE id = ?')
+    .run(homeDir, insideHome, '20260730_164700_cli00001');
+  state.close();
+
+  const projects = new Database(path.join(homeDir, 'projects.db'));
+  projects.exec(`
+    CREATE TABLE project_folders (project_id TEXT, path TEXT, label TEXT, is_primary INTEGER, added_at TEXT);
+    CREATE TABLE discovered_repos (root TEXT, label TEXT, last_seen TEXT);
+  `);
+  projects.prepare('INSERT INTO project_folders VALUES (?, ?, ?, 1, NULL)')
+    .run('home', homeDir, 'Hermes home');
+  projects.prepare('INSERT INTO project_folders VALUES (?, ?, ?, 1, NULL)')
+    .run('ancestor', baseDir, 'Hermes home ancestor');
+  projects.prepare('INSERT INTO discovered_repos VALUES (?, ?, NULL)')
+    .run(insideHome, 'Inside Hermes home');
+  projects.prepare('INSERT INTO project_folders VALUES (?, ?, ?, 1, NULL)')
+    .run('safe', safeDir, 'Safe workspace');
+  projects.close();
+
+  const backend = new HermesAgentBackend(instance('workspace-curation', homeDir));
+  const roots = await backend.listWorkspaceRoots();
+  const rootPaths = await Promise.all(roots.map((root) => backend.resolveWorkspacePath(root.id, '')));
+  assert.deepEqual(rootPaths, [fs.realpathSync(safeDir)]);
+  assert.ok(roots.every((root) => root.writable === true));
+});
+
+test('workspace secret filtering rejects direct file reads independently of root curation', async () => {
+  const homeDir = path.join(tempRoot, 'workspace-secret-filter');
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.writeFileSync(path.join(homeDir, 'config.yaml'), 'model:\n  default: fixture\n');
+  fs.writeFileSync(path.join(homeDir, '.env'), 'API_KEY=secret\n');
+  fs.writeFileSync(path.join(homeDir, 'auth.json'), '{"token":"secret"}\n');
+  const backend = new HermesAgentBackend(instance('workspace-secret-filter', homeDir));
+  const root = {
+    id: 'direct-hermes-home',
+    label: 'Direct Hermes home',
+    kind: 'workspace' as const,
+    writable: false,
+    abs: homeDir,
+  };
+  const readDirectly = (backend as unknown as {
+    readWorkspaceAtRoot: (
+      candidate: typeof root,
+      relPath: string,
+    ) => ReturnType<HermesAgentBackend['readWorkspace']>;
+  }).readWorkspaceAtRoot.bind(backend);
+
+  for (const relPath of ['.env', 'auth.json']) {
+    assert.deepEqual(await readDirectly(root, relPath), {
+      root,
+      type: 'error',
+      error: 'Not found',
+    });
+  }
 });
 
 test('workspace browsing reads files beneath a real temporary project root', async () => {
