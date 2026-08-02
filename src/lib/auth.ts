@@ -19,7 +19,7 @@ export interface UserRecord extends User {
   password_hash: string;
 }
 
-export type UserRole = 'admin' | 'editor' | 'viewer';
+export type UserRole = 'admin' | 'editor' | 'viewer' | 'tenant';
 export type AuthProvider = 'local' | 'google';
 export type LoginRequestStatus = 'pending' | 'approved' | 'denied';
 
@@ -41,6 +41,7 @@ type UserRoleInput = UserRole | 'operator';
 
 function normalizeRole(value: string): UserRole {
   if (value === 'operator') return 'editor';
+  if (value === 'tenant') return 'tenant';
   if (value === 'admin' || value === 'editor' || value === 'viewer') return value;
   return 'viewer';
 }
@@ -333,6 +334,25 @@ export function upsertGoogleUser(googleSub: string, email: string): User {
   db.prepare(
     "INSERT INTO users (username, password_hash, role, email, auth_provider, google_sub) VALUES (?, ?, ?, ?, 'google', ?)",
   ).run(username, hashPassword(pseudoPassword), role, normalizedEmail, googleSub);
+
+  const row = db
+    .prepare('SELECT id, username, role, created_at, email, auth_provider FROM users WHERE username = ?')
+    .get(username) as User;
+  return { ...row, role: normalizeRole(row.role) };
+}
+
+export function upsertStagesnapUser(sub: string): User {
+  ensureAuthTables();
+  if (!sub?.trim()) throw new Error('Missing StageSnap subject');
+
+  const db = getDb();
+  const username = `stagesnap:${sub}`;
+  const pseudoPassword = randomBytes(24).toString('hex');
+  db.prepare(
+    `INSERT INTO users (username, password_hash, role, auth_provider)
+     VALUES (?, ?, 'tenant', 'stagesnap')
+     ON CONFLICT(username) DO UPDATE SET role = 'tenant', auth_provider = 'stagesnap'`,
+  ).run(username, hashPassword(pseudoPassword));
 
   const row = db
     .prepare('SELECT id, username, role, created_at, email, auth_provider FROM users WHERE username = ?')
