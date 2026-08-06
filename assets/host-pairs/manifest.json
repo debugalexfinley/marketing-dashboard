@@ -1,0 +1,95 @@
+{
+  "created": "2026-08-05",
+  "purpose": "Candidate host pairs for internal podcast-UGC ad pipeline (docs/workflows/podcast-ugc-ads.md). Alex approves via contact-sheet.jpg. Approved pairs get stored as ugc_host_pair assets.",
+  "model": "gemini-3.1-flash-image (Nano Banana 2 \u2014 StageSnap fast default per web/src/lib/provider-config.ts)",
+  "aspect_ratio": "3:4",
+  "technique": "Reference-screenshot rebuild: Host A generated from a real podcast still (framing/mic/posture kept, person + room replaced); Host B generated using Host A's OUTPUT frame as reference plus the identical word-for-word room description \u2014 locks 'shot on the same day'.",
+  "budget": {
+    "cap_usd": 4.0,
+    "generations": 9,
+    "output_image_tokens": 15976,
+    "estimated_spend_usd": 0.5,
+    "note": "~$0.03-0.09/image at flash-image output-token pricing; well under cap."
+  },
+  "references": [
+    {
+      "file": "references/ref-1-stocksnap-woman-mic.jpg",
+      "source": "https://stocksnap.io (CDN NJCWWNF3FM), found via Openverse API",
+      "license": "CC0 (StockSnap)",
+      "role": "framing reference for pair1-hostA and pair3-hostA"
+    },
+    {
+      "file": "references/ref-2-wikimedia-two-host-desk.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Larry_Mastropieri_Discover_South_Florida_Podcast_2026.jpg",
+      "license": "CC BY 4.0",
+      "role": "framing reference for pair2-hostA"
+    },
+    {
+      "file": "references/ref-3-stocksnap-woman-profile.jpg",
+      "source": "https://stocksnap.io (CDN YA3HZPUFYL), found via Openverse API",
+      "license": "CC0 (StockSnap)",
+      "role": "backup reference (unused in finals)"
+    }
+  ],
+  "pairs": [
+    {
+      "id": 1,
+      "audience": "StageSnap \u2014 realtor-adjacent women ~30s",
+      "room": "sage-green accent panel home studio, botanical prints, pothos shelf, warm lamp + daylight, walnut desk",
+      "hostA": {
+        "file": "pair1-hostA.jpg",
+        "reference": "references/ref-1-stocksnap-woman-mic.jpg",
+        "attempts": 2,
+        "chosen": "v2 (v1 had doubled mic/pop-filter clutter)",
+        "prompt": "Use the attached photo ONLY as a framing reference: recreate the same camera angle, distance, microphone placement relative to the face, and seated posture \u2014 but with a COMPLETELY DIFFERENT person and a different room. The person: a woman in her early 30s with sun-kissed light-brown hair in loose waves, wearing a cream ribbed-knit top and small gold hoop earrings, polished-casual like a successful residential realtor. She is mid-conversation, eyes toward an unseen co-host just off camera-left, warm genuine engaged expression. Exactly ONE microphone in frame \u2014 a single black dynamic mic with a round foam windscreen on one boom arm, NO pop filter, no second microphone, clean uncluttered foreground. The room: a bright home podcast studio: warm white wall with a sage-green painted accent panel, two small framed botanical prints hung just left of center, a trailing pothos plant on a light-oak floating shelf, soft warm lamplight from the right mixing with window daylight, a walnut desk, and a black dynamic microphone with a round foam windscreen on a black boom arm reaching in from the lower corner. Photorealistic candid podcast video still, shot on a Sony mirrorless camera, natural skin texture with pores, soft depth of field on the background, realistic color, no beauty-filter smoothing, no plastic AI look. Framed chest-up, seated at the microphone, captured mid-sentence with natural mouth movement and relaxed hands. Vertical portrait orientation."
+      },
+      "hostB": {
+        "file": "pair1-hostB.jpg",
+        "reference": "gen/p1a-v2.jpg (Host A output frame)",
+        "attempts": 1,
+        "chosen": "v1",
+        "prompt": "The attached photo is Host A of a two-person podcast. Generate HOST B: the co-host sitting across the same desk in the SAME room, shot the SAME day on the SAME camera \u2014 identical wall, identical lighting temperature, identical microphone model on its boom arm, MIRRORED framing: this host's face and eyeline turn clearly toward camera-RIGHT (toward Host A who sits off-frame right), and Host A's blurred out-of-focus shoulder and hair edge into the LOWER-LEFT corner of the frame. Host B is a COMPLETELY DIFFERENT person: a Black woman in her early 30s with shoulder-length natural curls, wearing a terracotta silk blouse and thin gold necklace, warm and stylish. She is listening and about to react, eyebrows slightly raised, engaged. The room, exactly: a bright home podcast studio: warm white wall with a sage-green painted accent panel, two small framed botanical prints hung just left of center, a trailing pothos plant on a light-oak floating shelf, soft warm lamplight from the right mixing with window daylight, a walnut desk, and a black dynamic microphone with a round foam windscreen on a black boom arm reaching in from the lower corner. Photorealistic candid podcast video still, shot on a Sony mirrorless camera, natural skin texture with pores, soft depth of field on the background, realistic color, no beauty-filter smoothing, no plastic AI look. Framed chest-up, seated at the microphone, captured mid-sentence with natural mouth movement and relaxed hands. Vertical portrait orientation."
+      },
+      "known_nit": "blurred foreground co-host shoulder hair color doesn't match the partner exactly; invisible after tight lipsync crop, regenerate if it bothers"
+    },
+    {
+      "id": 2,
+      "audience": "LoanGraphs \u2014 LO-adjacent mixed pair ~40s",
+      "room": "charcoal slat-panel wall w/ amber backlight, oak desk, broadcast mics on boom arms, brass lamp + books",
+      "hostA": {
+        "file": "pair2-hostA.jpg",
+        "reference": "references/ref-2-wikimedia-two-host-desk.jpg",
+        "attempts": 1,
+        "chosen": "v1",
+        "prompt": "Use the attached photo ONLY as a framing reference: recreate the same camera angle, distance, microphone placement relative to the face, and seated posture \u2014 but with a COMPLETELY DIFFERENT person and a different room. The person: a woman around 42 with a dark-blonde shoulder-length bob, wearing a navy blazer over a white crew-neck tee, credible mortgage-industry professional energy. She is mid-conversation, eyes toward an unseen co-host just off camera-left, warm genuine engaged expression. The room: a moody professional podcast studio: charcoal wood slat-panel wall with soft amber backlighting glowing between the slats, a warm oak desk, brushed-black broadcast microphones on articulated boom arms, a low shelf behind with a small brass lamp and two hardcover books, and warm key light from the left. Photorealistic candid podcast video still, shot on a Sony mirrorless camera, natural skin texture with pores, soft depth of field on the background, realistic color, no beauty-filter smoothing, no plastic AI look. Framed chest-up, seated at the microphone, captured mid-sentence with natural mouth movement and relaxed hands. Vertical portrait orientation."
+      },
+      "hostB": {
+        "file": "pair2-hostB.jpg",
+        "reference": "gen/p2a-v1.jpg (Host A output frame)",
+        "attempts": 2,
+        "chosen": "v2 (v1 lacked Host A shoulder / mirrored eyeline)",
+        "prompt": "The attached photo is Host A of a two-person podcast. Generate HOST B: the co-host sitting across the same desk in the SAME room, shot the SAME day on the SAME camera \u2014 identical wall, identical lighting temperature, identical microphone model on its boom arm, MIRRORED framing: this host's face and eyeline turn clearly toward camera-RIGHT (toward Host A who sits off-frame right), and Host A's blurred out-of-focus shoulder and hair edge into the LOWER-LEFT corner of the frame. Host B is a COMPLETELY DIFFERENT person: a man around 45 with short salt-and-pepper hair and groomed stubble, wearing a light-blue oxford shirt with the top button open, seasoned loan-officer energy. He is listening and about to react, eyebrows slightly raised, engaged. The room, exactly: a moody professional podcast studio: charcoal wood slat-panel wall with soft amber backlighting glowing between the slats, a warm oak desk, brushed-black broadcast microphones on articulated boom arms, a low shelf behind with a small brass lamp and two hardcover books, and warm key light from the left. Photorealistic candid podcast video still, shot on a Sony mirrorless camera, natural skin texture with pores, soft depth of field on the background, realistic color, no beauty-filter smoothing, no plastic AI look. Framed chest-up, seated at the microphone, captured mid-sentence with natural mouth movement and relaxed hands. Vertical portrait orientation."
+      }
+    },
+    {
+      "id": 3,
+      "audience": "Wildcard \u2014 gen-z creator duo (mydreamTC / broad UGC)",
+      "room": "golden-hour creator loft: warm white brick, Edison string lights, olive velvet chair, silver mic",
+      "hostA": {
+        "file": "pair3-hostA.jpg",
+        "reference": "references/ref-1-stocksnap-woman-mic.jpg",
+        "attempts": 1,
+        "chosen": "v1",
+        "prompt": "Use the attached photo ONLY as a framing reference: recreate the same camera angle, distance, microphone placement relative to the face, and seated posture \u2014 but with a COMPLETELY DIFFERENT person and a different room. The person: a woman around 27 with dark hair and curtain bangs pulled half-up, wearing an oversized rust-orange cropped cardigan over a white tank, gen-z creator energy. She is mid-conversation, eyes toward an unseen co-host just off camera-left, warm genuine engaged expression. The room: a creator-loft podcast corner at golden hour: warm white painted brick wall, a string of tiny warm Edison bulbs draped high across the frame, an olive-green velvet armchair, a round walnut side table, a silver dynamic microphone with a black foam windscreen on a tabletop boom arm, and honey-gold window light streaming from the left. Photorealistic candid podcast video still, shot on a Sony mirrorless camera, natural skin texture with pores, soft depth of field on the background, realistic color, no beauty-filter smoothing, no plastic AI look. Framed chest-up, seated at the microphone, captured mid-sentence with natural mouth movement and relaxed hands. Vertical portrait orientation."
+      },
+      "hostB": {
+        "file": "pair3-hostB.jpg",
+        "reference": "gen/p3a-v1.jpg (Host A output frame)",
+        "attempts": 2,
+        "chosen": "v2 (v1 eyeline matched A instead of mirroring)",
+        "prompt": "The attached photo is Host A of a two-person podcast. Generate HOST B: the co-host sitting across the same desk in the SAME room, shot the SAME day on the SAME camera \u2014 identical wall, identical lighting temperature, identical microphone model on its boom arm, MIRRORED framing: this host's face and eyeline turn clearly toward camera-RIGHT (toward Host A who sits off-frame right), and Host A's blurred out-of-focus shoulder and hair edge into the LOWER-LEFT corner of the frame. Host B is a COMPLETELY DIFFERENT person: a Latino man around 30 with short wavy dark hair, wearing an open sage-green overshirt over a cream tee, relaxed and expressive. He is listening and about to react, eyebrows slightly raised, engaged. The room, exactly: a creator-loft podcast corner at golden hour: warm white painted brick wall, a string of tiny warm Edison bulbs draped high across the frame, an olive-green velvet armchair, a round walnut side table, a silver dynamic microphone with a black foam windscreen on a tabletop boom arm, and honey-gold window light streaming from the left. Photorealistic candid podcast video still, shot on a Sony mirrorless camera, natural skin texture with pores, soft depth of field on the background, realistic color, no beauty-filter smoothing, no plastic AI look. Framed chest-up, seated at the microphone, captured mid-sentence with natural mouth movement and relaxed hands. Vertical portrait orientation."
+      }
+    }
+  ],
+  "all_attempts_kept_in": "gen/"
+}
